@@ -1,5 +1,5 @@
-from src.utils.logging import get_logger
-from src.utils.models import get_model
+from shared_kernel.logging import get_logger
+from shared_kernel.models import get_model
 
 logger = get_logger(__name__)
 
@@ -10,7 +10,7 @@ async def init_chat() -> dict:
     return {"message": "Chat is initialized!"}
 
 
-async def process_chat_request() -> dict:
+async def handle_request() -> dict:
     """ Chat with the Kyma companion """
     logger.info("Processing request...")
 
