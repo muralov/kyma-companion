@@ -1,8 +1,10 @@
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+from langchain_redis import RedisChatMessageHistory
 
 from agents.common.data import Message
+from agents.memory.conversation_history import ConversationMessage, QueryType
 from services.conversation import ConversationService
 
 TIME_STAMP = 1.8
@@ -27,6 +29,18 @@ TEST_MESSAGE = Message(
     resource_name="my-pod",
     namespace="default",
 )
+
+from threading import Thread
+
+import redis
+from fakeredis import TcpFakeServer
+
+REDIS_HOST = "127.0.0.1"
+REDIS_PORT = 6379
+server_address = (REDIS_HOST, REDIS_PORT)
+server = TcpFakeServer(server_address)
+t = Thread(target=server.serve_forever, daemon=True)
+t.start()
 
 
 @pytest.mark.asyncio(scope="class")
@@ -77,12 +91,11 @@ class TestConversation:
         ):
             yield mock_history
 
-    def test_new_conversation(
+    @pytest.mark.asyncio
+    async def test_new_conversation(
         self,
         mock_model_factory,
         mock_kyma_graph,
-        mock_redis_saver,
-        mock_init_pool,
         mock_redis_history,
     ) -> None:
         # Given:
@@ -96,8 +109,21 @@ class TestConversation:
         mock_k8s_client = Mock()
 
         # When:
-        result = conversation_service.new_conversation(
+        result = await conversation_service.new_conversation(
             session_id=CONVERSATION_ID, k8s_client=mock_k8s_client, message=TEST_MESSAGE
+        )
+
+        # print messages from redis
+        messages = await conversation_service.redis_saver.get_all_conversation_messages(
+            CONVERSATION_ID
+        )
+        conversation = ConversationMessage(**messages[0])
+
+        assert conversation == ConversationMessage(
+            type=QueryType.USER_QUERY,
+            query=TEST_MESSAGE.query,
+            response="",
+            timestamp=0.0,
         )
 
         # Then:

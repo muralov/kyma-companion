@@ -6,6 +6,7 @@ from langchain_redis import RedisChatMessageHistory
 
 from agents.common.data import Message
 from agents.graph import IGraph, KymaGraph
+from agents.memory.conversation_history import ConversationMessage, QueryType
 from agents.memory.redis_checkpointer import RedisSaver, initialize_async_pool
 from initial_questions.inital_questions import (
     IInitialQuestionsHandler,
@@ -63,10 +64,12 @@ class ConversationService(metaclass=SingletonMeta):
 
         self._model = ModelFactory().create_model(LLM.GPT4O)
         # Set up the Kyma Graph which allows access to stored conversation histories.
-        redis_saver = RedisSaver(async_connection=initialize_async_pool(url=REDIS_URL))
-        self._kyma_graph = KymaGraph(model=self._model, memory=redis_saver)
+        self.redis_saver = RedisSaver(
+            async_connection=initialize_async_pool(url=REDIS_URL)
+        )
+        self._kyma_graph = KymaGraph(model=self._model, memory=self.redis_saver)
 
-    def new_conversation(
+    async def new_conversation(
         self, session_id: str, k8s_client: IK8sClient, message: Message
     ) -> list[str]:
         """Initialize a new conversation."""
@@ -95,6 +98,16 @@ class ConversationService(metaclass=SingletonMeta):
             message=HumanMessage(
                 content=f"These are the information I got from my Kubernetes cluster:\n{k8s_context}"
             )
+        )
+
+        await self.redis_saver.add_conversation_message(
+            session_id,
+            ConversationMessage(
+                type=QueryType.USER_QUERY,
+                query=message.query,
+                response="",
+                timestamp=0.0,
+            ),
         )
 
         return questions
