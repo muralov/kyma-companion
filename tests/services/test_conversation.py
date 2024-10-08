@@ -1,3 +1,4 @@
+import os
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
@@ -35,8 +36,8 @@ from threading import Thread
 import redis
 from fakeredis import TcpFakeServer
 
-REDIS_HOST = "127.0.0.1"
-REDIS_PORT = 6379
+REDIS_HOST = os.getenv("REDIS_HOST")
+REDIS_PORT = int(os.getenv("REDIS_PORT"))
 server_address = (REDIS_HOST, REDIS_PORT)
 server = TcpFakeServer(server_address)
 t = Thread(target=server.serve_forever, daemon=True)
