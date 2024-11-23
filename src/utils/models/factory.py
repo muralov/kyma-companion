@@ -71,20 +71,6 @@ def init_proxy_client() -> BaseProxyClient:
     return get_proxy_client("gen-ai-hub")
 
 
-def get_model_config(name: str) -> ModelConfig | None:
-    """
-    Retrieve a model data by its name.
-
-    Args:
-        name (str): The name of the model to find.
-
-    Returns:
-        ModelConfig | None: The matching model if found, otherwise None.
-    """
-    config = get_config()
-    return next((model for model in config.models if model.name == name), None)
-
-
 class IModelFactory(Protocol):
     """Model Factory Interface."""
 
@@ -103,6 +89,21 @@ class ModelFactory:
     def __init__(self):
         self._proxy_client = init_proxy_client()
         self._models: dict[str, IModel | Embeddings] = {}
+        self._config = get_config()
+
+    def _get_model_config(self, name: str) -> ModelConfig | None:
+        """
+        Retrieve a model data by its name.
+
+        Args:
+            name (str): The name of the model to find.
+
+        Returns:
+            ModelConfig | None: The matching model if found, otherwise None.
+        """
+        return next(
+            (model for model in self._config.models if model.name == name), None
+        )
 
     def create_model(self, name: str) -> IModel | Embeddings:
         """
@@ -113,7 +114,7 @@ class ModelFactory:
         if model:
             return model
 
-        model_config = get_model_config(name)
+        model_config = self._get_model_config(name)
         if model_config is None:
             raise ModelNotFoundError(f"Model {name} not found in the configuration.")
 

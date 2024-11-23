@@ -6,6 +6,7 @@ from deepeval.metrics import (
     AnswerRelevancyMetric,
     ContextualRecallMetric,
     FaithfulnessMetric,
+    ContextualRelevancyMetric,
 )
 from deepeval.test_case import LLMTestCase
 
@@ -22,15 +23,15 @@ def evaluation_metrics(evaluator_model):
 
     # calculates how much retrieved context aligns with the expected output
     contextual_recall = ContextualRecallMetric(
-        threshold=0.7, model=evaluator_model, include_reason=True
+        threshold=0.5, model=evaluator_model, include_reason=True
     )
     # TODO: enable it after chunking is improved.
     # Currently, H1 level chunking is used that return
     # lots of irrelevant information in the retrieved context
     # calculates how much retrieved context is relevant to the query
-    # contextual_relevancy = ContextualRelevancyMetric(
-    #     threshold=0.4, model=evaluator_model, include_reason=True
-    # )
+    contextual_relevancy = ContextualRelevancyMetric(
+        threshold=0.5, model=evaluator_model, include_reason=True
+    )
 
     answer_relevancy = AnswerRelevancyMetric(
         threshold=0.7, model=evaluator_model, include_reason=True
@@ -41,6 +42,7 @@ def evaluation_metrics(evaluator_model):
     )
     return [
         contextual_recall,
+        contextual_relevancy,
         answer_relevancy,
         faithfulness,
     ]
@@ -106,21 +108,23 @@ def rag_system(app_models):
             "fixtures/kyma_docs/telemetry-manager/docs/user/resources/04-tracepipeline.md",
             id="show how to create a trace pipeline",
         ),
-        # TODO: enable it after indexing is improved. Currently it is failing.
-        # pytest.param(
-        #     "what are the prerequisites for applications to enable logging?",
-        #     "fixtures/kyma_docs/telemetry-manager/docs/user/02-logs.md",
-        #     id="what are the prerequisites for applications to enable logging?",
-        # ),
-        # eventing
+        # # TODO: enable it after indexing is improved. Currently it is failing.
         pytest.param(
-            "some eventing messages are pending",
-            "fixtures/kyma_docs/eventing-manager/docs/user/troubleshooting/evnt-05-fix-pending-messages.md",
+            "what are the prerequisites for Kyma application to enable logging?",
+            "fixtures/kyma_docs/telemetry-manager/docs/user/app-log-prerequisites.md",
+            id="what are the prerequisites for applications to enable logging?",
+        ),
+        # # eventing
+        pytest.param(
+            "some eventing messages are pending in the stream",
+            # "fixtures/kyma_docs/eventing-manager/docs/user/troubleshooting/evnt-05-fix-pending-messages.md",
+            "fixtures/kyma_docs/eventing-manager/docs/user/troubleshooting/pending-events.md",
             id="some eventing messages are pending",
         ),
         pytest.param(
             "what to do if event publish rate is so high?",
-            "fixtures/kyma_docs/eventing-manager/docs/user/troubleshooting/evnt-04-free-jetstream-storage.md",
+            "fixtures/kyma_docs/eventing-manager/docs/user/troubleshooting/high-event-rate.md",
+            # "fixtures/kyma_docs/eventing-manager/docs/user/troubleshooting/evnt-04-free-jetstream-storage.md",
             id="what to do if event publish rate is so high?",
         ),
     ],
@@ -131,7 +135,7 @@ def test_rag_search(input, expected_output_path, rag_system, evaluation_metrics)
 
     # When
     query = Query(text=input)
-    retrieved_docs = rag_system.retrieve(query)
+    retrieved_docs = rag_system.retrieve(query, 20)
     assert len(retrieved_docs) > 0, "No documents retrieved"
 
     actual_output = rag_system.generate(query, retrieved_docs)

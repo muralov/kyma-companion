@@ -83,7 +83,7 @@ class RAGSystem:
 
         return unique_docs
 
-    def retrieve(self, query: Query, top_k: int = 3) -> list[Document]:
+    def retrieve(self, query: Query, top_k: int = 5) -> list[Document]:
         """Retrieve documents for a given query."""
         logger.info(f"Retrieving documents for query: {query.text}")
 
@@ -93,8 +93,8 @@ class RAGSystem:
 
         # retrieve documents for each query
         all_docs = []
-        for query in all_queries:
-            retrieved_docs = self.retriever.retrieve(query)
+        for q in all_queries:
+            retrieved_docs = self.retriever.retrieve(q)
             all_docs.extend(retrieved_docs)
 
         # remove duplicates from all retrieved documents

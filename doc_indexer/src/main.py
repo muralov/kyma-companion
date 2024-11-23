@@ -2,7 +2,7 @@ import argparse
 import subprocess
 
 from fetcher.fetcher import DocumentsFetcher
-from indexing.indexer import MarkdownIndexer
+from indexing.advanced_indexer import AdvancedMarkdownIndexer
 
 from utils.hana import create_hana_connection
 from utils.models import (
@@ -49,7 +49,9 @@ def run_indexer() -> None:
         DATABASE_URL, DATABASE_PORT, DATABASE_USER, DATABASE_PASSWORD
     )
 
-    indexer = MarkdownIndexer(DOCS_PATH, embeddings_model, hana_conn, DOCS_TABLE_NAME)
+    indexer = AdvancedMarkdownIndexer(
+        DOCS_PATH, embeddings_model, hana_conn, DOCS_TABLE_NAME
+    )
     indexer.index()
 
 
