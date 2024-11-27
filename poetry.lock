@@ -795,13 +795,13 @@ files = [
 
 [[package]]
 name = "deepeval"
-version = "1.5.9"
+version = "1.6.2"
 description = "The open-source evaluation framework for LLMs."
 optional = false
 python-versions = "*"
 files = [
-    {file = "deepeval-1.5.9-py3-none-any.whl", hash = "sha256:904b553b21213078e48388fd90ec75db48272e95a40d8a6232e673421039c01f"},
-    {file = "deepeval-1.5.9.tar.gz", hash = "sha256:75116e6122c80589199d26143163efc8e2da7f4d92d137e7557c0745c052f025"},
+    {file = "deepeval-1.6.2-py3-none-any.whl", hash = "sha256:78a7d93c6971132544b72485dba278e423a1ccdbd1b69a4499dffcc72212d76a"},
+    {file = "deepeval-1.6.2.tar.gz", hash = "sha256:27b2961733c99f4638685a42d2edd0383ac17133cf54ace8fefb257d8c174850"},
 ]
 
 [package.dependencies]
@@ -6040,4 +6040,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.0"
 python-versions = "~3.12"
-content-hash = "2805266392434387429f6934cf219274bc614e4bf69eda8fc80a09117842c1a3"
+content-hash = "3e49b7941c6486161d15cc1512d6cf8d704465588e1e4ff244f93d67e0274336"
