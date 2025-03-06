@@ -12,6 +12,8 @@ def load_env_from_json() -> None:
 
     config_path = Path(os.getenv("CONFIG_PATH", default_config_path))
 
+    config_path = Path(__file__).parent.parent.parent / config_path
+
     try:
         # Load the configuration from the given path and set the environment variables.
         with config_path.open() as file:

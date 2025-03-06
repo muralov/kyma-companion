@@ -1,5 +1,5 @@
 import json
-from collections.abc import AsyncIterator, Hashable
+from collections.abc import AsyncIterator
 from typing import (
     Any,
     Protocol,
@@ -22,6 +22,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.constants import END
 from langgraph.graph import StateGraph
 from langgraph.graph.graph import CompiledGraph
+from langgraph.types import Send
 
 from agents.common.agent import IAgent
 from agents.common.constants import (
@@ -33,7 +34,7 @@ from agents.common.constants import (
     SUMMARIZATION,
 )
 from agents.common.data import Message
-from agents.common.state import CompanionState, Plan, SubTask, UserInput
+from agents.common.state import BaseAgentState, CompanionState, Plan, SubTask, UserInput
 from agents.common.utils import should_continue
 from agents.k8s.agent import K8S_AGENT, KubernetesAgent
 from agents.kyma.agent import KYMA_AGENT, KymaAgent
@@ -200,6 +201,21 @@ class CompanionGraph:
             SUBTASKS: state.subtasks,
         }
 
+    def assign_workers_to_subtasks(self, state: CompanionState) -> list[Send]:
+        """Assign workers to the subtasks."""
+        return [
+            Send(
+                subtask.assigned_to,
+                BaseAgentState(
+                    messages=state.messages,
+                    agent_messages=[],
+                    k8s_client=state.k8s_client_global,
+                    my_task=subtask,
+                ),
+            )
+            for subtask in state.subtasks
+        ]
+
     def _build_graph(self) -> CompiledGraph:
         """Create the companion parent graph."""
 
@@ -207,7 +223,9 @@ class CompanionGraph:
         workflow = StateGraph(CompanionState)
 
         # Define the nodes of the graph.
+        # supervisor returns the plan w/ subtasks assigned to agents
         workflow.add_node(SUPERVISOR, self.supervisor_agent.agent_node())
+
         workflow.add_node(KYMA_AGENT, self.kyma_agent.agent_node())
         workflow.add_node(K8S_AGENT, self.k8s_agent.agent_node())
         workflow.add_node(COMMON, self._common_node)
@@ -222,9 +240,9 @@ class CompanionGraph:
         workflow.set_entry_point(SUMMARIZATION)
 
         # The supervisor dynamically populates the "next" field in the graph.
-        conditional_map: dict[Hashable, str] = {k: k for k in self.members + [END]}
+        # conditional_map: dict[Hashable, str] = {k: k for k in self.members + [END]}
         # Define the dynamic conditional edges: supervisor --> (KymaAgent | KubernetesAgent | Common | END)
-        workflow.add_conditional_edges(SUPERVISOR, lambda x: x.next, conditional_map)
+        workflow.add_conditional_edges(SUPERVISOR, self.assign_workers_to_subtasks)
 
         workflow.add_conditional_edges(
             SUMMARIZATION,
@@ -259,7 +277,7 @@ class CompanionGraph:
             input={
                 "messages": messages,
                 "input": user_input,
-                "k8s_client": k8s_client,
+                "k8s_client_global": k8s_client,
                 "subtasks": [],
                 "error": None,
             },

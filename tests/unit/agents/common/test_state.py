@@ -93,7 +93,7 @@ class TestCompanionState:
             next=None,
             subtasks=[],
             error=None,
-            k8s_client=None,
+            k8s_client_global=None,
         )
         # when
         result = state.get_messages_including_summary()

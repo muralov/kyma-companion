@@ -8,20 +8,17 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.constants import END
 from langgraph.graph import StateGraph
-from langgraph.prebuilt import ToolNode
 
 from agents.common.constants import (
     AGENT_MESSAGES,
     AGENT_MESSAGES_SUMMARY,
     CONTINUE,
     ERROR,
-    IS_LAST_STEP,
     MESSAGES,
-    MY_TASK,
-    SUBTASKS,
     SUMMARIZATION,
 )
 from agents.common.state import BaseAgentState, SubTaskStatus
+from agents.common.tool_node import ToolNode
 from agents.common.utils import filter_messages, should_continue
 from agents.summarization.summarization import MessageSummarizer
 from utils.chain import ainvoke_chain
@@ -102,29 +99,29 @@ class BaseAgent:
     def _create_chain(self, agent_prompt: ChatPromptTemplate) -> Any:
         return agent_prompt | self.model.llm.bind_tools(self.tools)
 
-    def _subtask_selector_node(self, state: BaseAgentState) -> dict[str, Any]:
-        if state.k8s_client is None:
-            raise ValueError("Kubernetes client is not initialized.")
+    # def _subtask_selector_node(self, state: BaseAgentState) -> dict[str, Any]:
+    #     if state.k8s_client is None:
+    #         raise ValueError("Kubernetes client is not initialized.")
 
-        # find subtasks assigned to this agent and not completed.
-        for subtask in state.subtasks:
-            if (
-                subtask.assigned_to == self.name
-                and subtask.status == SubTaskStatus.PENDING
-            ):
-                return {
-                    MY_TASK: subtask,
-                }
+    #     # find subtasks assigned to this agent and not completed.
+    #     for subtask in state.subtasks:
+    #         if (
+    #             subtask.assigned_to == self.name
+    #             and subtask.status == SubTaskStatus.PENDING
+    #         ):
+    #             return {
+    #                 MY_TASK: subtask,
+    #             }
 
-        return {
-            AGENT_MESSAGES: [
-                AIMessage(
-                    content="All my subtasks are already completed.",
-                    name=self.name,
-                )
-            ],
-            IS_LAST_STEP: True,
-        }
+    #     return {
+    #         AGENT_MESSAGES: [
+    #             AIMessage(
+    #                 content="All my subtasks are already completed.",
+    #                 name=self.name,
+    #             )
+    #         ],
+    #         IS_LAST_STEP: True,
+    #     }
 
     async def _invoke_chain(self, state: BaseAgentState, config: RunnableConfig) -> Any:
         inputs = {
@@ -190,14 +187,14 @@ class BaseAgent:
         if state.my_task is not None and state.my_task.status != SubTaskStatus.ERROR:
             state.my_task.complete()
         # clean all agent messages to avoid populating the checkpoint with unnecessary messages.
-        return {MESSAGES: [state.agent_messages[-1]], SUBTASKS: state.subtasks}
+        return {MESSAGES: [state.agent_messages[-1]]}
 
     def _build_graph(self, state_class: type) -> Any:
         # Define a new graph
         workflow = StateGraph(state_class)
 
         # Define nodes with async awareness
-        workflow.add_node("subtask_selector", self._subtask_selector_node)
+        # workflow.add_node("subtask_selector", self._subtask_selector_node)
         workflow.add_node("agent", self._model_node)
         workflow.add_node(
             "tools", ToolNode(tools=self.tools, messages_key=AGENT_MESSAGES)
@@ -206,10 +203,10 @@ class BaseAgent:
         workflow.add_node(SUMMARIZATION, self.summarization.summarization_node)
 
         # Set the entrypoint: ENTRY --> subtask_selector
-        workflow.set_entry_point("subtask_selector")
+        workflow.set_entry_point("agent")
 
         # Define the edge: subtask_selector --> (agent | end)
-        workflow.add_conditional_edges("subtask_selector", subtask_selector_edge)
+        # workflow.add_conditional_edges("subtask_selector", subtask_selector_edge)
 
         # Define the edge: agent --> (tool | finalizer)
         workflow.add_conditional_edges("agent", agent_edge)

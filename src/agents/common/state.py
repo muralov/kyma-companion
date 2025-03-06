@@ -114,7 +114,7 @@ class CompanionState(BaseModel):
     next: str | None = None
     subtasks: list[SubTask] | None = []
     error: str | None = None
-    k8s_client: IK8sClient | None = None
+    k8s_client_global: IK8sClient | None = None
 
     def get_messages_including_summary(self) -> list[MessageLikeRepresentation]:
         """Get messages including the summary message."""
@@ -147,7 +147,7 @@ class BaseAgentState(BaseModel):
     agent_messages: Annotated[Sequence[BaseMessage], add_messages]
     agent_messages_summary: str = ""
     my_task: SubTask | None = None
-    is_last_step: IsLastStep
+    is_last_step: IsLastStep = False
     error: str | None = None
 
     def get_agent_messages_including_summary(self) -> list[MessageLikeRepresentation]:
