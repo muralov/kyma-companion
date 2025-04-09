@@ -224,7 +224,6 @@ class CompanionGraph:
             [
                 ("system", GATEKEEPER_PROMPT),
                 MessagesPlaceholder(variable_name="messages"),
-                ("human", "query: {query}"),
                 ("system", GATEKEEPER_INSTRUCTIONS),
             ]
         )
@@ -238,7 +237,6 @@ class CompanionGraph:
             self._gatekeeper_chain,
             {
                 "messages": state.get_messages_including_summary(),
-                "query": user_query,
             },
         )
         return response

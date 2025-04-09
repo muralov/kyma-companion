@@ -43,6 +43,42 @@ def gatekeeper_correctness_metric(evaluator_model):
                     content="The user query is related to: "
                     "{'resource_kind': 'Cluster', 'resource_api_version': '', 'resource_name': '', 'namespace': ''}"
                 ),
+                HumanMessage(content="what is wrong?"),
+            ],
+            "",
+            False,
+        ),
+        (
+            "cluster-scoped kyma api rules query should be forwarded",
+            [
+                SystemMessage(
+                    content="The user query is related to: "
+                    "{'resource_kind': 'Cluster', 'resource_api_version': '', 'resource_name': '', 'namespace': ''}"
+                ),
+                HumanMessage(content="is there any error?"),
+            ],
+            "",
+            False,
+        ),
+        (
+            "cluster-scoped kyma api rules query should be forwarded",
+            [
+                SystemMessage(
+                    content="The user query is related to: "
+                    "{'resource_kind': 'Cluster', 'resource_api_version': '', 'resource_name': '', 'namespace': ''}"
+                ),
+                HumanMessage(content="check the cluster"),
+            ],
+            "",
+            False,
+        ),
+        (
+            "cluster-scoped kyma api rules query should be forwarded",
+            [
+                SystemMessage(
+                    content="The user query is related to: "
+                    "{'resource_kind': 'Cluster', 'resource_api_version': '', 'resource_name': '', 'namespace': ''}"
+                ),
                 HumanMessage(content="is something wrong with api rules?"),
             ],
             "",
