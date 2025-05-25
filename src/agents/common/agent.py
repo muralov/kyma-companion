@@ -32,6 +32,7 @@ from agents.common.utils import (
     filter_messages,
     filter_valid_messages,
     should_continue,
+    handle_agent_node_error, # Added import for the decorator
 )
 from agents.summarization.summarization import MessageSummarizer
 from utils.chain import ainvoke_chain
@@ -221,70 +222,55 @@ class BaseAgent:
                     break
         return summarized_tool_response
 
+    @handle_agent_node_error # Applied the decorator
     async def _model_node(
         self, state: BaseAgentState, config: RunnableConfig
     ) -> dict[str, Any]:
-        try:
-            if state.remaining_steps > AGENT_STEPS_NUMBER:
-                summarized_tool_response = ""
-                if state.agent_messages and isinstance(
-                    state.agent_messages[-1], ToolMessage
-                ):
-                    try:
-                        summarized_tool_response = await self._summarize_tool_response(
-                            state, config
-                        )
-                    except Exception as e:
-                        logger.error(
-                            f"Error while summarizing the tool response , Error : {e}."
-                        )
-                        return {
-                            AGENT_MESSAGES: [
-                                AIMessage(
-                                    content="Your request is too broad and requires analyzing "
-                                    "more resources than allowed at once. "
-                                    "Please specify a particular resource you'd like to analyze so "
-                                    "I can assist you more effectively.",
-                                    name=self.name,
-                                )
-                            ]
-                        }
-                response = await self._invoke_chain(
-                    state, config, summarized_tool_response
-                )
-            else:
-                if state.my_task:
-                    state.my_task.status = SubTaskStatus.ERROR
-
-                logger.error(
-                    f"Agent reached the recursive limit, steps remaining: {state.remaining_steps}."
-                )
-                return {
-                    AGENT_MESSAGES: [
-                        AIMessage(
-                            content="Agent reached the recursive limit, not able to call Tools again",
-                            name=self.name,
-                        )
-                    ],
-                }
-        except Exception as e:
-            error_message = "An error occurred while processing the request"
-            error_message_with_trace = error_message + f": {e}"
-            logger.error(error_message_with_trace)
-
-            # Update current subtask status
+        # The outermost try...except block has been removed.
+        # The core logic starts here.
+        if state.remaining_steps > AGENT_STEPS_NUMBER:
+            summarized_tool_response = ""
+            if state.agent_messages and isinstance(
+                state.agent_messages[-1], ToolMessage
+            ):
+                try:
+                    summarized_tool_response = await self._summarize_tool_response(
+                        state, config
+                    )
+                except Exception as e:
+                    # This specific try-except for _summarize_tool_response is kept as it's more specific
+                    # than the generic one removed.
+                    logger.error(
+                        f"Error while summarizing the tool response , Error : {e}."
+                    )
+                    return {
+                        AGENT_MESSAGES: [
+                            AIMessage(
+                                content="Your request is too broad and requires analyzing "
+                                "more resources than allowed at once. "
+                                "Please specify a particular resource you'd like to analyze so "
+                                "I can assist you more effectively.",
+                                name=self.name,
+                            )
+                        ]
+                    }
+            response = await self._invoke_chain(
+                state, config, summarized_tool_response
+            )
+        else:
             if state.my_task:
                 state.my_task.status = SubTaskStatus.ERROR
 
+            logger.error(
+                f"Agent reached the recursive limit, steps remaining: {state.remaining_steps}."
+            )
             return {
                 AGENT_MESSAGES: [
                     AIMessage(
-                        content="Sorry, an unexpected error occurred while processing your request."
-                        "Please try again later.",
+                        content="Agent reached the recursive limit, not able to call Tools again",
                         name=self.name,
                     )
                 ],
-                ERROR: error_message,  # we dont send trace to frontend
             }
 
         # if the recursive limit is reached and the response is a tool call, return a message.

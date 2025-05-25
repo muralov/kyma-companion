@@ -1,7 +1,8 @@
 import ast
 import json
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, TYPE_CHECKING
+import functools # Import functools for @functools.wraps
 
 import tiktoken
 import yaml
@@ -15,6 +16,7 @@ from langgraph.graph.message import Messages
 from pydantic import BaseModel
 
 from agents.common.constants import (
+    AGENT_MESSAGES, 
     CONTINUE,
     ERROR,
     MESSAGES,
@@ -23,13 +25,59 @@ from agents.common.constants import (
     SUBTASKS,
 )
 from agents.common.data import Message
-from agents.common.state import SubTask
+from agents.common.state import SubTask, SubTaskStatus
+# Import BaseAgentState and RunnableConfig under TYPE_CHECKING to avoid circular imports
+if TYPE_CHECKING:
+    from agents.common.state import BaseAgentState
+    from langchain_core.runnables.config import RunnableConfig
+
 from services.k8s import IK8sClient
 from utils.logging import get_logger
 from utils.models.factory import ModelType
 from utils.utils import is_empty_str, is_non_empty_str
 
 logger = get_logger(__name__)
+
+
+# Decorator for handling errors in agent nodes
+def handle_agent_node_error(func):
+    """
+    Decorator to handle common error patterns in agent graph nodes,
+    specifically for nodes like _model_node in BaseAgent.
+    """
+    @functools.wraps(func) # Preserve original function metadata
+    async def wrapper(
+        agent_instance, state: "BaseAgentState", config: "RunnableConfig", *args, **kwargs
+    ):
+        """
+        Wrapper function for the decorator.
+        Args:
+            agent_instance: The instance of the agent class (e.g., BaseAgent, which is 'self' in the method).
+            state: The current state of the agent.
+            config: The runnable config.
+            *args, **kwargs: Additional arguments for the decorated function.
+        """
+        try:
+            # Call the original async function (e.g., _model_node)
+            return await func(agent_instance, state, config, *args, **kwargs)
+        except Exception as e:
+            error_message = "An error occurred while processing the request"
+            # Use the module-level logger from this file (utils.py)
+            logger.error(f"{error_message}: {e}", exc_info=True)
+
+            if hasattr(state, "my_task") and state.my_task:
+                state.my_task.status = SubTaskStatus.ERROR
+
+            return {
+                AGENT_MESSAGES: [
+                    AIMessage(
+                        content="Sorry, an unexpected error occurred while processing your request. Please try again later.",
+                        name=agent_instance.name, # Access agent's name via agent_instance
+                    )
+                ],
+                ERROR: error_message,
+            }
+    return wrapper
 
 
 def filter_messages(
@@ -123,7 +171,7 @@ def compute_messages_token_count(msgs: Messages, model_type: ModelType) -> int:
     return sum(tokens_per_msg)
 
 
-def should_continue(state: BaseModel) -> str:
+def should_continue(state: "BaseAgentState") -> str: # Added BaseAgentState type hint
     """
     Returns END if there is an error, else CONTINUE.
     """
