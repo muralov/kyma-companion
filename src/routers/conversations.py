@@ -22,7 +22,6 @@ from services.k8s_resource_discovery import K8sResourceDiscovery
 from services.langfuse import ILangfuseService, LangfuseService
 from utils.config import Config, get_config
 from utils.logging import get_logger
-from utils.response import prepare_chunk_response
 from utils.utils import (
     create_session_id,
     get_user_identifier_from_client_certificate,
@@ -271,7 +270,7 @@ async def messages(
             async for chunk in conversation_service.handle_request(
                 conversation_id, message, k8s_client
             )
-            for chunk_response in (prepare_chunk_response(chunk),)
+            for chunk_response in (chunk,)
             if chunk_response is not None
         ),
         media_type="text/event-stream",

@@ -188,6 +188,13 @@ class CompanionState(BaseModel):
         return self.messages
 
 
+class NewCompanionState(BaseModel):
+    """State for the new companion graph."""
+
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+    k8s_client: Annotated[Any, Field(default=None, exclude=True)]
+
+
 class BaseAgentState(BaseModel):
     """Base state for KymaAgent and KubernetesAgent agents (subgraphs)."""
 

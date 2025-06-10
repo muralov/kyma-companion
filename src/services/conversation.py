@@ -4,8 +4,9 @@ from typing import Protocol, cast
 from langfuse.callback import CallbackHandler
 
 from agents.common.data import Message
-from agents.graph import CompanionGraph, IGraph
+from agents.graph import IGraph
 from agents.memory.async_redis_checkpointer import get_async_redis_saver
+from agents.new_graph import NewGraph
 from followup_questions.followup_questions import (
     FollowUpQuestionsHandler,
     IFollowUpQuestionsHandler,
@@ -102,7 +103,10 @@ class ConversationService(metaclass=SingletonMeta):
             checkpointer, TOKEN_LIMIT_PER_CLUSTER, TOKEN_USAGE_RESET_INTERVAL
         )
 
-        self._companion_graph = CompanionGraph(
+        # self._companion_graph = CompanionGraph(
+        #     models, memory=checkpointer, handler=langfuse_handler
+        # )
+        self._companion_graph = NewGraph(
             models, memory=checkpointer, handler=langfuse_handler
         )
 
