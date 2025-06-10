@@ -1,6 +1,6 @@
 import json
 from collections.abc import AsyncIterator
-from typing import Annotated, Any, cast
+from typing import Annotated, Any
 
 from langchain_core.embeddings import Embeddings
 from langchain_core.messages import (
@@ -20,6 +20,7 @@ from langgraph.prebuilt import InjectedState, create_react_agent
 from langgraph.types import Command, Send
 
 from agents.common.data import Message
+from agents.common.new_agent import NewAgent
 from agents.common.state import (
     NewCompanionState,
     SubTask,
@@ -29,9 +30,7 @@ from agents.k8s.tools.logs import fetch_pod_logs_tool
 from agents.k8s.tools.query import k8s_query_tool
 from agents.kyma.tools.query import fetch_kyma_resource_version, kyma_query_tool
 from agents.kyma.tools.search import SearchKymaDocTool
-from agents.memory.async_redis_checkpointer import IUsageMemory
 from services.k8s import IK8sClient
-from services.usage import UsageTrackerCallback
 from utils.logging import get_logger
 from utils.models.factory import IModel
 from utils.settings import (
@@ -81,14 +80,14 @@ def create_task_description_handoff_tool(
         ],
         # these parameters are ignored by the LLM
         state: Annotated[NewCompanionState, InjectedState],
+        k8s_client: Annotated[IK8sClient, InjectedState],
     ) -> Command:
         task_description_message = {"role": "user", "content": task_description}
         agent_input = {
             "messages": [task_description_message],
-            "k8s_client": state.k8s_client,
+            "k8s_client": k8s_client,
         }
         return Command(
-            # highlight-next-line
             goto=[Send(agent_name, agent_input)],
             graph=Command.PARENT,
         )
@@ -119,33 +118,38 @@ class NewGraph:
         self.models = models
         self.memory = memory
         self.handler = handler
-        self.kyma_agent = create_react_agent(
-            model=models[MAIN_MODEL_NAME].llm,
-            tools=[
-                fetch_kyma_resource_version,
-                kyma_query_tool,
-                SearchKymaDocTool(models),
-            ],
-            prompt=(
+
+        self.kyma_agent = NewAgent(
+            name="kyma_agent",
+            model=models[MAIN_MODEL_NAME],
+            system_prompt=(
                 "You are a Kyma agent.\n\n"
                 "INSTRUCTIONS:\n"
                 "- Assist ONLY with Kyma-related tasks, DO NOT do any k8s-related tasks\n"
                 "- After you're done with your tasks, respond to the supervisor directly\n"
                 "- Respond ONLY with the results of your work, do NOT include ANY other text."
             ),
-            name="kyma_agent",
+            tools=[
+                fetch_kyma_resource_version,
+                kyma_query_tool,
+                SearchKymaDocTool(models),
+            ],
         )
-        self.k8s_agent = create_react_agent(
-            model=models[MAIN_MODEL_NAME].llm,
-            tools=[k8s_query_tool, fetch_pod_logs_tool],
-            prompt=(
-                "You are a k8s agent.\n\n"
+
+        self.k8s_agent = NewAgent(
+            name="k8s_agent",
+            model=models[MAIN_MODEL_NAME],
+            system_prompt=(
+                "You are a Kubernetes agent.\n\n"
                 "INSTRUCTIONS:\n"
-                "- Assist ONLY with k8s-related tasks, DO NOT do any Kyma-related tasks\n"
+                "- Assist ONLY with Kubernetes-related tasks, DO NOT do any Kyma-related tasks\n"
                 "- After you're done with your tasks, respond to the supervisor directly\n"
                 "- Respond ONLY with the results of your work, do NOT include ANY other text."
             ),
-            name="k8s_agent",
+            tools=[
+                k8s_query_tool,
+                fetch_pod_logs_tool,
+            ],
         )
 
         self.supervisor_agent = create_react_agent(
@@ -157,7 +161,7 @@ class NewGraph:
             prompt=(
                 "You are a supervisor managing two agents:\n"
                 "- a kyma agent. Assign kyma-related tasks to this assistant\n"
-                "- a k8s agent. Assign k8s-related tasks to this assistant\n"
+                "- a kubernetes agent. Assign kubernetes-related tasks to this assistant\n"
                 "Assign work to one agent at a time, do not call agents in parallel.\n"
                 "Do not do any work yourself."
             ),
@@ -172,8 +176,8 @@ class NewGraph:
                 self.supervisor_agent,
                 destinations=("kyma_agent", "k8s_agent"),
             )
-            .add_node(self.kyma_agent)
-            .add_node(self.k8s_agent)
+            .add_node("kyma_agent", self.kyma_agent.graph)
+            .add_node("k8s_agent", self.k8s_agent.graph)
             .add_edge(START, "supervisor")
             .add_edge("kyma_agent", "supervisor")
             .add_edge("k8s_agent", "supervisor")
@@ -195,9 +199,6 @@ class NewGraph:
                 ),
             )
 
-        x_cluster_url = k8s_client.get_api_server()
-        cluster_id = x_cluster_url.split(".")[1]
-
         async for chunk in self.graph.astream(
             input={
                 "messages": messages,
@@ -209,11 +210,7 @@ class NewGraph:
                 },
                 "callbacks": [
                     self.handler,
-                    UsageTrackerCallback(cluster_id, cast(IUsageMemory, self.memory)),
                 ],
-                "tags": [
-                    cluster_id
-                ],  # cluster_id as a tag for traceability and rate limiting
             },
         ):
             chunk_json = json.dumps(chunk, cls=CustomJSONEncoder)
