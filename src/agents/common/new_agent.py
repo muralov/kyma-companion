@@ -10,6 +10,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools.base import BaseTool
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode
 
 from services.k8s import IK8sClient
 from utils.models.factory import IModel
@@ -81,7 +82,7 @@ class NewAgent:
 
         # Define the two nodes we will cycle between
         workflow.add_node("agent", self.call_model)
-        workflow.add_node("tools", self.tool_node)
+        workflow.add_node("tools", ToolNode(tools=self.tools))
 
         # Set the entrypoint as `agent`
         # This means that this node is the first one called

@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from enum import Enum
-from typing import Annotated, Any, Literal, TypedDict, cast
+from typing import Annotated, Any, Literal, cast
 
 from langchain_core.messages import (
     BaseMessage,
@@ -8,7 +8,6 @@ from langchain_core.messages import (
 )
 from langgraph.graph import add_messages
 from langgraph.managed import IsLastStep, RemainingSteps
-from langgraph.prebuilt import InjectedState
 from pydantic import BaseModel, Field
 from pydantic.config import ConfigDict
 
@@ -190,11 +189,14 @@ class CompanionState(BaseModel):
         return self.messages
 
 
-class NewCompanionState(TypedDict):
+class NewCompanionState(BaseModel):
     """State for the new companion graph."""
 
     messages: Annotated[Sequence[BaseMessage], add_messages]
-    k8s_client: Annotated[IK8sClient, InjectedState("k8s_client")]
+    k8s_client: Annotated[IK8sClient, Field(default=None, exclude=True)]
+
+    # Model config for pydantic.
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class BaseAgentState(BaseModel):
@@ -202,7 +204,7 @@ class BaseAgentState(BaseModel):
 
     messages: Annotated[Sequence[BaseMessage], add_messages]
     subtasks: list[SubTask] | None = []
-    k8s_client: Annotated[Any, Field(default=None, exclude=True)]
+    k8s_client: Annotated[Any, Field(default=None)]
 
     # Subgraph private fields
     agent_messages: Annotated[Sequence[BaseMessage], add_messages]

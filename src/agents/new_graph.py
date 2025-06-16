@@ -16,8 +16,10 @@ from langchain_core.tools.base import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.prebuilt import InjectedState, create_react_agent
+from langgraph.prebuilt import InjectedState
 from langgraph.types import Command, Send
+from pydantic import BaseModel, Field
+from pydantic.config import ConfigDict
 
 from agents.common.data import Message
 from agents.common.new_agent import NewAgent
@@ -71,21 +73,32 @@ def create_task_description_handoff_tool(
     name = f"transfer_to_{agent_name}"
     description = description or f"Ask {agent_name} for help."
 
-    @tool(name, description=description)
+    class TransferToAgentArgs(BaseModel):
+        """Arguments for the kyma_query_tool."""
+
+        task_description: str = Field(
+            description="Description of what the next agent should do, including all of the relevant context.",
+        )
+
+        state: Annotated[NewCompanionState, InjectedState]
+
+        # Model configuration for Pydantic.
+        model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @tool(
+        name,
+        description=description,
+        infer_schema=False,
+        args_schema=TransferToAgentArgs,
+    )
     def handoff_tool(
-        # this is populated by the supervisor LLM
-        task_description: Annotated[
-            str,
-            "Description of what the next agent should do, including all of the relevant context.",
-        ],
-        # these parameters are ignored by the LLM
+        task_description: str,
         state: Annotated[NewCompanionState, InjectedState],
-        k8s_client: Annotated[IK8sClient, InjectedState],
     ) -> Command:
         task_description_message = {"role": "user", "content": task_description}
         agent_input = {
             "messages": [task_description_message],
-            "k8s_client": k8s_client,
+            "k8s_client": state.k8s_client,
         }
         return Command(
             goto=[Send(agent_name, agent_input)],
@@ -152,20 +165,20 @@ class NewGraph:
             ],
         )
 
-        self.supervisor_agent = create_react_agent(
-            model=models[MAIN_MODEL_NAME].llm,
-            tools=[
-                assign_to_kyma_agent_with_description,
-                assign_to_k8s_agent_with_description,
-            ],
-            prompt=(
+        self.supervisor_agent = NewAgent(
+            name="supervisor",
+            model=models[MAIN_MODEL_NAME],
+            system_prompt=(
                 "You are a supervisor managing two agents:\n"
                 "- a kyma agent. Assign kyma-related tasks to this assistant\n"
                 "- a kubernetes agent. Assign kubernetes-related tasks to this assistant\n"
                 "Assign work to one agent at a time, do not call agents in parallel.\n"
                 "Do not do any work yourself."
             ),
-            name="supervisor",
+            tools=[
+                assign_to_kyma_agent_with_description,
+                assign_to_k8s_agent_with_description,
+            ],
         )
         self.graph = self._build_graph()
 
@@ -173,7 +186,8 @@ class NewGraph:
         return (
             StateGraph(NewCompanionState)
             .add_node(
-                self.supervisor_agent,
+                "supervisor",
+                self.supervisor_agent.graph,
                 destinations=("kyma_agent", "k8s_agent"),
             )
             .add_node("kyma_agent", self.kyma_agent.graph)
