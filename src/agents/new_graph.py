@@ -14,7 +14,7 @@ from langchain_core.messages import (
 from langchain_core.tools import tool
 from langchain_core.tools.base import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.graph import START, StateGraph
+from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command, Send
@@ -119,6 +119,27 @@ assign_to_k8s_agent_with_description = create_task_description_handoff_tool(
 )
 
 
+# def init_finalizer_node(model: IModel) -> Callable[[NewCompanionState], str]:
+#     """Initialize the finalizer node."""
+#     system_prompt = (
+#         "You are a finalizer agent responsible for synthesizing and delivering clear, actionable results.\n\n"
+#         "INSTRUCTIONS:\n"
+#         "- Review all agent responses and tool outputs carefully\n"
+#         "- Synthesize the information into a clear, structured response\n"
+#         "- Focus on actionable insights and key findings\n"
+#         "- If there were any errors or issues, acknowledge them clearly\n"
+#         "- Format technical information in a readable way (e.g. using markdown for code/commands)\n"
+#         "- Keep the response concise but complete\n"
+#         "- Respond ONLY with the final synthesized result, do NOT include ANY other text"
+#     )
+
+#     def invoke_finalizer(state: NewCompanionState) -> str:
+#         response = model.invoke([system_prompt] + state.messages)
+#         return response.content
+
+#     return invoke_finalizer
+
+
 class NewGraph:
     """New graph class. Represents all the workflow of the application."""
 
@@ -165,6 +186,23 @@ class NewGraph:
             ],
         )
 
+        self.finalizer_agent = NewAgent(
+            name="finalizer",
+            model=models[MAIN_MODEL_NAME],
+            system_prompt=(
+                "You are a finalizer agent responsible for synthesizing and delivering clear, actionable results.\n\n"
+                "INSTRUCTIONS:\n"
+                "- Review all agent responses and tool outputs carefully\n"
+                "- Synthesize the information into a clear, structured response\n"
+                "- Focus on actionable insights and key findings\n"
+                "- If there were any errors or issues, acknowledge them clearly\n"
+                "- Format technical information in a readable way (e.g. using markdown for code/commands)\n"
+                "- Keep the response concise but complete\n"
+                "- Respond ONLY with the final synthesized result, do NOT include ANY other text"
+            ),
+            tools=[],
+        )
+
         self.supervisor_agent = NewAgent(
             name="supervisor",
             model=models[MAIN_MODEL_NAME],
@@ -172,8 +210,9 @@ class NewGraph:
                 "You are a supervisor managing two agents:\n"
                 "- a kyma agent. Assign kyma-related tasks to this assistant\n"
                 "- a kubernetes agent. Assign kubernetes-related tasks to this assistant\n"
+                "- a finalizer agent. Call this agent at the end of the conversation to synthesize the results of the conversation.\n"
                 "Assign work to one agent at a time, do not call agents in parallel.\n"
-                "Do not do any work yourself."
+                "Do not do any work yourself.\n"
             ),
             tools=[
                 assign_to_kyma_agent_with_description,
@@ -192,6 +231,7 @@ class NewGraph:
             )
             .add_node("kyma_agent", self.kyma_agent.graph)
             .add_node("k8s_agent", self.k8s_agent.graph)
+            .add_node("finalizer", self.finalizer_agent.graph)
             .add_edge(START, "supervisor")
             .add_edge("kyma_agent", "supervisor")
             .add_edge("k8s_agent", "supervisor")
