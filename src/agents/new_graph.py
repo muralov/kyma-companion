@@ -118,26 +118,10 @@ assign_to_k8s_agent_with_description = create_task_description_handoff_tool(
     description="Assign task to a k8s agent.",
 )
 
-
-# def init_finalizer_node(model: IModel) -> Callable[[NewCompanionState], str]:
-#     """Initialize the finalizer node."""
-#     system_prompt = (
-#         "You are a finalizer agent responsible for synthesizing and delivering clear, actionable results.\n\n"
-#         "INSTRUCTIONS:\n"
-#         "- Review all agent responses and tool outputs carefully\n"
-#         "- Synthesize the information into a clear, structured response\n"
-#         "- Focus on actionable insights and key findings\n"
-#         "- If there were any errors or issues, acknowledge them clearly\n"
-#         "- Format technical information in a readable way (e.g. using markdown for code/commands)\n"
-#         "- Keep the response concise but complete\n"
-#         "- Respond ONLY with the final synthesized result, do NOT include ANY other text"
-#     )
-
-#     def invoke_finalizer(state: NewCompanionState) -> str:
-#         response = model.invoke([system_prompt] + state.messages)
-#         return response.content
-
-#     return invoke_finalizer
+assign_to_finalizer_with_description = create_task_description_handoff_tool(
+    agent_name="finalizer",
+    description="Assign task to a finalizer agent.",
+)
 
 
 class NewGraph:
@@ -217,6 +201,7 @@ class NewGraph:
             tools=[
                 assign_to_kyma_agent_with_description,
                 assign_to_k8s_agent_with_description,
+                assign_to_finalizer_with_description,
             ],
         )
         self.graph = self._build_graph()
@@ -227,7 +212,7 @@ class NewGraph:
             .add_node(
                 "supervisor",
                 self.supervisor_agent.graph,
-                destinations=("kyma_agent", "k8s_agent"),
+                destinations=("kyma_agent", "k8s_agent", "finalizer"),
             )
             .add_node("kyma_agent", self.kyma_agent.graph)
             .add_node("k8s_agent", self.k8s_agent.graph)
