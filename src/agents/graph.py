@@ -283,7 +283,7 @@ class CompanionGraph:
                 ("system", FINALIZER_PROMPT_FOLLOW_UP),
             ]
         ).partial(members=self._get_members_str(), query=last_human_message.content)
-        return prompt | self.model.llm  # type: ignore
+        return prompt | self.models[MAIN_MODEL_MINI_NAME].llm  # type: ignore
 
     async def _generate_final_response(self, state: CompanionState) -> dict[str, Any]:
         """Generate the final response."""
@@ -347,7 +347,7 @@ class CompanionGraph:
                 goto=Send(
                     response["next"],
                     {
-                        "agent_messages": [
+                        "messages": [
                             HumanMessage(content=response["messages"][-1].content)
                         ],
                         "k8s_client": state.k8s_client,
@@ -381,8 +381,9 @@ class CompanionGraph:
 
         # Define the edges: (KymaAgent | KubernetesAgent | Common) --> summarization --> supervisor
         # The agents ALWAYS "report back" to the supervisor through summarization node.
-        for member in self.members:
-            workflow.add_edge(member, SUMMARIZATION)
+        # workflow.add_edge(KYMA_AGENT, SUMMARIZATION)
+        # workflow.add_edge(K8S_AGENT, SUMMARIZATION)
+        workflow.add_edge(COMMON, SUMMARIZATION)
 
         # Set the entrypoint: ENTRY --> Initial_Summarization
         workflow.set_entry_point(INITIAL_SUMMARIZATION)

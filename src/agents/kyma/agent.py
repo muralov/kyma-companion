@@ -6,8 +6,8 @@ from langchain_core.tools import BaseTool
 
 from agents.common.agent import BaseAgent
 from agents.common.constants import (
-    AGENT_MESSAGES,
     KYMA_AGENT,
+    MESSAGES,
 )
 from agents.kyma.prompts import KYMA_AGENT_INSTRUCTIONS, KYMA_AGENT_PROMPT
 from agents.kyma.state import KymaAgentState
@@ -34,7 +34,7 @@ class KymaAgent(BaseAgent):
         agent_prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", KYMA_AGENT_PROMPT),
-                MessagesPlaceholder(variable_name=AGENT_MESSAGES),
+                MessagesPlaceholder(variable_name=MESSAGES),
                 ("system", KYMA_AGENT_INSTRUCTIONS),
             ]
         ).partial(

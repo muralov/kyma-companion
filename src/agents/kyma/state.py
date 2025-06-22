@@ -13,8 +13,8 @@ from utils.utils import to_sequence_messages
 class KymaAgentState(BaseModel):
     """The state of the Kyma agent."""
 
-    agent_messages: Annotated[Sequence[BaseMessage], add_messages]
-    agent_messages_summary: str = ""
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+    messages_summary: str = ""
     k8s_client: Annotated[Any, Field(default=None, exclude=True)]
 
     # Subgraph private fields
@@ -27,10 +27,10 @@ class KymaAgentState(BaseModel):
 
     def get_messages_including_summary(self) -> Sequence[BaseMessage]:
         """Get messages including the summary message."""
-        if self.agent_messages_summary:
+        if self.messages_summary:
             return to_sequence_messages(
                 add_messages(
-                    SystemMessage(content=self.agent_messages_summary),
+                    SystemMessage(content=self.messages_summary),
                     cast(
                         list[
                             BaseMessage
@@ -39,8 +39,8 @@ class KymaAgentState(BaseModel):
                             | str
                             | dict[str, Any]
                         ],
-                        self.agent_messages,
+                        self.messages,
                     ),
                 )
             )
-        return self.agent_messages
+        return self.messages

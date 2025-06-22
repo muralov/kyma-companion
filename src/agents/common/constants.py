@@ -23,10 +23,6 @@ MESSAGES = "messages"
 
 MESSAGES_SUMMARY = "messages_summary"
 
-AGENT_MESSAGES = "agent_messages"
-
-AGENT_MESSAGES_SUMMARY = "agent_messages_summary"
-
 ERROR = "error"
 
 NEXT = "next"
