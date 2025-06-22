@@ -1,5 +1,5 @@
 import json
-from collections.abc import AsyncIterator, Hashable
+from collections.abc import AsyncIterator
 from typing import Any, Protocol, cast
 
 from langchain_core.embeddings import Embeddings
@@ -18,11 +18,13 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.constants import END
 from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.types import Command, Send
 
 from agents.common.agent import IAgent
 from agents.common.constants import (
     COMMON,
     CONTINUE,
+    FINALIZER,
     GATEKEEPER,
     INITIAL_SUMMARIZATION,
     MESSAGES,
@@ -32,6 +34,7 @@ from agents.common.constants import (
     SUMMARIZATION,
 )
 from agents.common.data import Message
+from agents.common.response_converter import ResponseConverter
 from agents.common.state import (
     CompanionState,
     GatekeeperResponse,
@@ -42,7 +45,6 @@ from agents.common.state import (
 from agents.common.utils import filter_valid_messages, should_continue
 from agents.k8s.agent import K8S_AGENT, KubernetesAgent
 from agents.kyma.agent import KYMA_AGENT, KymaAgent
-from agents.memory.async_redis_checkpointer import IUsageMemory
 from agents.prompts import (
     COMMON_QUESTION_PROMPT,
     GATEKEEPER_INSTRUCTIONS,
@@ -50,8 +52,8 @@ from agents.prompts import (
 )
 from agents.summarization.summarization import MessageSummarizer
 from agents.supervisor.agent import SUPERVISOR, SupervisorAgent
+from agents.supervisor.prompts import FINALIZER_PROMPT, FINALIZER_PROMPT_FOLLOW_UP
 from services.k8s import IK8sClient
-from services.usage import UsageTrackerCallback
 from utils.chain import ainvoke_chain
 from utils.logging import get_logger
 from utils.models.factory import IModel
@@ -146,6 +148,8 @@ class CompanionGraph:
             messages_summary_key=MESSAGES_SUMMARY,
         )
 
+        self.response_converter = ResponseConverter()
+
         self.members = [self.kyma_agent.name, self.k8s_agent.name, COMMON]
         self._common_chain = self._create_common_chain(cast(IModel, main_model_mini))
         self._gatekeeper_chain = self._create_gatekeeper_chain(
@@ -161,63 +165,43 @@ class CompanionGraph:
             [
                 ("system", COMMON_QUESTION_PROMPT),
                 MessagesPlaceholder(variable_name="messages"),
-                ("human", "query: {query}"),
             ]
         )
         return prompt | model.llm  # type: ignore
 
-    async def _invoke_common_node(self, state: CompanionState, subtask: str) -> str:
+    async def _invoke_common_node(self, state: CompanionState) -> str:
         """Invoke the common node."""
         response = await ainvoke_chain(
             self._common_chain,
-            {
-                "messages": filter_valid_messages(
-                    state.get_messages_including_summary()
-                ),
-                "query": subtask,
-            },
+            {"messages": filter_valid_messages(state.get_messages_including_summary())},
         )
         return str(response.content)
 
     async def _common_node(self, state: CompanionState) -> dict[str, Any]:
         """Common node to handle general queries."""
 
-        for subtask in state.subtasks:
-            if subtask.assigned_to == COMMON and subtask.status != "completed":
-                try:
-                    response = await self._invoke_common_node(
-                        state, subtask.description
+        try:
+            response = await self._invoke_common_node(state)
+            return {
+                MESSAGES: [
+                    AIMessage(
+                        content=response,
+                        name=COMMON,
                     )
-                    subtask.complete()
-                    return {
-                        MESSAGES: [
-                            AIMessage(
-                                content=response,
-                                name=COMMON,
-                            )
-                        ],
-                        SUBTASKS: state.subtasks,
-                    }
-                except Exception:
-                    logger.exception("Error in common node")
-                    return {
-                        MESSAGES: [
-                            AIMessage(
-                                content="Sorry, I am unable to process the request.",
-                                name=COMMON,
-                            )
-                        ],
-                        SUBTASKS: state.subtasks,
-                    }
-        return {
-            MESSAGES: [
-                AIMessage(
-                    content="All my subtasks are already completed.",
-                    name=COMMON,
-                )
-            ],
-            SUBTASKS: state.subtasks,
-        }
+                ],
+                SUBTASKS: state.subtasks,
+            }
+        except Exception:
+            logger.exception("Error in common node")
+            return {
+                MESSAGES: [
+                    AIMessage(
+                        content="Sorry, I am unable to process the request.",
+                        name=COMMON,
+                    )
+                ],
+                SUBTASKS: state.subtasks,
+            }
 
     @staticmethod
     def _create_gatekeeper_chain(model: IModel) -> RunnableSequence:
@@ -283,20 +267,117 @@ class CompanionGraph:
                 SUBTASKS: [],
             }
 
+    def _get_members_str(self) -> str:
+        return ", ".join(self.members)
+
+    def _final_response_chain(self, state: CompanionState) -> RunnableSequence:
+        # last human message must be the query
+        last_human_message = next(
+            (msg for msg in reversed(state.messages) if isinstance(msg, HumanMessage)),
+        )
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", FINALIZER_PROMPT),
+                MessagesPlaceholder(variable_name="messages"),
+                ("system", FINALIZER_PROMPT_FOLLOW_UP),
+            ]
+        ).partial(members=self._get_members_str(), query=last_human_message.content)
+        return prompt | self.model.llm  # type: ignore
+
+    async def _generate_final_response(self, state: CompanionState) -> dict[str, Any]:
+        """Generate the final response."""
+
+        # If all required agents failed: tell user that we can't give them response due to agent failure
+        if state.subtasks and all(subtask.is_error() for subtask in state.subtasks):
+            return {
+                MESSAGES: [
+                    AIMessage(
+                        content="We're unable to provide a response at this time due to agent failure. "
+                        "Please try again or reach out to our support team for further assistance.",
+                        name=FINALIZER,
+                    )
+                ],
+                NEXT: END,
+            }
+
+        final_response_chain = self._final_response_chain(state)
+
+        final_response = await ainvoke_chain(
+            final_response_chain,
+            {"messages": filter_valid_messages(state.messages)},
+        )
+        logger.debug("Final response generated")
+        return {
+            MESSAGES: [
+                AIMessage(
+                    content=final_response.content,
+                    name=FINALIZER,
+                )
+            ],
+            NEXT: END,
+        }
+
+    async def _get_converted_final_response(
+        self, state: CompanionState
+    ) -> dict[str, Any]:
+        """Convert the generated final response"""
+        try:
+            final_response = await self._generate_final_response(state)
+            logger.debug("Response conversion node started")
+            return self.response_converter.convert_final_response(final_response)
+        except Exception:
+            logger.exception("Error in generating final response")
+            return {
+                MESSAGES: [
+                    AIMessage(
+                        content="Sorry, I encountered an error while processing the request. Try again later.",
+                        name=FINALIZER,
+                    )
+                ]
+            }
+
+    async def _supervisor_node(self, state: CompanionState) -> Any:
+        """Supervisor node to handle the conversation."""
+        response = await self.supervisor_agent.agent_node().ainvoke(state)
+
+        if response["next"] != FINALIZER:
+            # only send the subtask message to the dedicated agent
+            return Command(
+                goto=Send(
+                    response["next"],
+                    {
+                        "agent_messages": [
+                            HumanMessage(content=response["messages"][-1].content)
+                        ],
+                        "k8s_client": state.k8s_client,
+                    },
+                ),
+            )
+
+        # finalizer needs all the messages to generate the final response
+        return Command(update={"messages": state.messages}, goto=FINALIZER)
+
     def _build_graph(self) -> CompiledStateGraph:
         """Create the companion parent graph."""
 
         # Define a new graph.
         workflow = StateGraph(CompanionState)
 
-        # Define the nodes of the graph.
-        workflow.add_node(SUPERVISOR, self.supervisor_agent.agent_node())
-        workflow.add_node(KYMA_AGENT, self.kyma_agent.agent_node())
-        workflow.add_node(K8S_AGENT, self.k8s_agent.agent_node())
-        workflow.add_node(COMMON, self._common_node)
         workflow.add_node(GATEKEEPER, self._gatekeeper_node)
         workflow.add_node(SUMMARIZATION, self.summarization.summarization_node)
         workflow.add_node(INITIAL_SUMMARIZATION, self.summarization.summarization_node)
+
+        # Define the nodes of the graph.
+        workflow.add_node(
+            SUPERVISOR,
+            self._supervisor_node,
+            destinations=tuple(self.members + [FINALIZER]),
+        )
+        workflow.add_node(KYMA_AGENT, self.kyma_agent.agent_node())
+        workflow.add_node(K8S_AGENT, self.k8s_agent.agent_node())
+        workflow.add_node(COMMON, self._common_node)
+        workflow.add_node(FINALIZER, self._generate_final_response)
 
         # Define the edges: (KymaAgent | KubernetesAgent | Common) --> summarization --> supervisor
         # The agents ALWAYS "report back" to the supervisor through summarization node.
@@ -320,9 +401,9 @@ class CompanionGraph:
         )
 
         # The supervisor dynamically populates the "next" field in the graph.
-        conditional_map: dict[Hashable, str] = {k: k for k in self.members + [END]}
-        # Define the dynamic conditional edges: supervisor --> (KymaAgent | KubernetesAgent | Common | END)
-        workflow.add_conditional_edges(SUPERVISOR, lambda x: x.next, conditional_map)
+        # conditional_map: dict[Hashable, str] = {k: k for k in self.members + [END]}
+        # # Define the dynamic conditional edges: supervisor --> (KymaAgent | KubernetesAgent | Common | END)
+        # workflow.add_conditional_edges(SUPERVISOR, lambda x: x.next, conditional_map)
 
         workflow.add_conditional_edges(
             SUMMARIZATION,
@@ -332,6 +413,8 @@ class CompanionGraph:
                 END: END,
             },
         )
+
+        workflow.add_edge(FINALIZER, END)
 
         # Compile the graph.
         graph = workflow.compile(checkpointer=self.memory)
@@ -370,7 +453,6 @@ class CompanionGraph:
                 },
                 "callbacks": [
                     self.handler,
-                    UsageTrackerCallback(cluster_id, cast(IUsageMemory, self.memory)),
                 ],
                 "tags": [
                     cluster_id

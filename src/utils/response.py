@@ -1,4 +1,3 @@
-import json
 from typing import Any
 
 from langgraph.constants import END
@@ -103,42 +102,3 @@ def process_response(data: dict[str, Any], agent: str) -> dict[str, Any] | None:
                 answer[NEXT] = FINALIZER
 
     return {"agent": agent, "answer": answer, "error": agent_error}
-
-
-def prepare_chunk_response(chunk: bytes) -> bytes | None:
-    """Converts and prepares a final chunk response."""
-    try:
-        data = json.loads(chunk)
-    except json.JSONDecodeError:
-        logger.exception("Invalid JSON")
-        return json.dumps(
-            {"event": "unknown", "data": {"error": "Invalid JSON"}}
-        ).encode()
-
-    agent = next(iter(data.keys()), None)
-
-    if not agent:
-        logger.error(f"Agent {agent} is not found in the json data")
-        return json.dumps(
-            {"event": "unknown", "data": {"error": "No agent found"}}
-        ).encode()
-
-    agent_data = data[agent]
-    if agent_data.get("messages"):
-        last_agent = agent_data["messages"][-1].get("name")
-        # skip all intermediate supervisor response
-        if agent == SUPERVISOR and last_agent != PLANNER and last_agent != FINALIZER:
-            return None
-
-    new_data = process_response(data, agent)
-
-    return (
-        json.dumps(
-            {
-                "event": "agent_action",
-                "data": new_data,
-            }
-        ).encode()
-        if new_data
-        else None
-    )

@@ -18,10 +18,7 @@ from agents.common.constants import (
     AGENT_MESSAGES_SUMMARY,
     CONTINUE,
     ERROR,
-    IS_LAST_STEP,
     MESSAGES,
-    MY_TASK,
-    SUBTASKS,
     SUMMARIZATION,
     TOOL_RESPONSE_TOKEN_COUNT_LIMIT,
     TOTAL_CHUNKS_LIMIT,
@@ -31,14 +28,13 @@ from agents.common.error_handler import (
     tool_parsing_error_handler,
 )
 from agents.common.exceptions import TotalChunksLimitExceededError
-from agents.common.state import BaseAgentState, SubTaskStatus
 from agents.common.utils import (
     compute_string_token_count,
     convert_string_to_object,
-    filter_messages,
     filter_valid_messages,
     should_continue,
 )
+from agents.kyma.state import KymaAgentState
 from agents.summarization.summarization import MessageSummarizer
 from utils.chain import ainvoke_chain
 from utils.logging import get_logger
@@ -55,14 +51,7 @@ logger = get_logger(__name__)
 AGENT_STEPS_NUMBER = 3
 
 
-def subtask_selector_edge(state: BaseAgentState) -> Literal["agent", "finalizer"]:
-    """Function that determines whether to finalize or call agent."""
-    if state.is_last_step and state.my_task is None:
-        return "finalizer"
-    return "agent"
-
-
-def agent_edge(state: BaseAgentState) -> Literal["Summarization", "finalizer"]:
+def agent_edge(state: KymaAgentState) -> Literal["Summarization", "finalizer"]:
     """Function that determines whether to call tools or finalizer."""
     last_message = state.agent_messages[-1]
     if isinstance(last_message, AIMessage) and not last_message.tool_calls:
@@ -124,44 +113,18 @@ class BaseAgent:
     def _create_chain(self, agent_prompt: ChatPromptTemplate) -> Any:
         return agent_prompt | self.model.llm.bind_tools(self.tools)
 
-    def _subtask_selector_node(self, state: BaseAgentState) -> dict[str, Any]:
-        if state.k8s_client is None:
-            raise ValueError("Kubernetes client is not initialized.")
-
-        # find subtasks assigned to this agent and not completed.
-        for subtask in state.subtasks:
-            if (
-                subtask.assigned_to == self.name
-                and subtask.status == SubTaskStatus.PENDING
-            ):
-                return {
-                    MY_TASK: subtask,
-                }
-
-        return {
-            AGENT_MESSAGES: [
-                AIMessage(
-                    content="All my subtasks are already completed.",
-                    name=self.name,
-                )
-            ],
-            IS_LAST_STEP: True,
-        }
-
     async def _invoke_chain(
         self,
-        state: BaseAgentState,
+        state: KymaAgentState,
         config: RunnableConfig,
         tool_summarized_response: str | None = "",
     ) -> Any:
-        input_messages = state.get_agent_messages_including_summary()
-        if len(state.agent_messages) == 0:
-            input_messages = filter_messages(state.messages)
+        agent_messages = state.get_messages_including_summary()
 
         # Append the tool summarized tool response
-        filter_valid_messages_list = filter_valid_messages(input_messages)
+        filtered_agent_messages = filter_valid_messages(agent_messages)
         if tool_summarized_response:
-            filter_valid_messages_list.append(
+            filtered_agent_messages.append(
                 AIMessage(
                     content="Summarized Tool Response - " + tool_summarized_response
                 )
@@ -170,8 +133,7 @@ class BaseAgent:
         response = await ainvoke_chain(
             self.chain,
             {
-                AGENT_MESSAGES: filter_valid_messages_list,
-                "query": state.my_task.description,
+                AGENT_MESSAGES: filtered_agent_messages,
             },
             config=config,
         )
@@ -203,7 +165,7 @@ class BaseAgent:
         )
 
     async def _summarize_tool_response(
-        self, state: BaseAgentState, config: RunnableConfig
+        self, state: KymaAgentState, config: RunnableConfig
     ) -> str:
         """
         Summarize tool responses if they exceed the token limit.
@@ -256,7 +218,7 @@ class BaseAgent:
         # Perform summarization using decorated method
         summarized_response = await self._execute_summarization(
             tool_responses=tool_responses,
-            user_query=state.my_task.description,
+            user_query=str(state.agent_messages[-1].content),
             config=config,
             num_chunks=num_chunks,
         )
@@ -266,7 +228,7 @@ class BaseAgent:
 
         return str(summarized_response)
 
-    def _mark_tool_messages_as_summarized(self, state: BaseAgentState) -> None:
+    def _mark_tool_messages_as_summarized(self, state: KymaAgentState) -> None:
         """
         Mark the specified number of recent tool messages as summarized.
 
@@ -281,7 +243,7 @@ class BaseAgent:
                 break
 
     async def _summarize_tool_response_with_error_handling(
-        self, state: BaseAgentState, config: RunnableConfig
+        self, state: KymaAgentState, config: RunnableConfig
     ) -> tuple[str, dict[str, Any] | None]:
         """
         Summarize tool response with error handling. This method encapsulates the
@@ -294,8 +256,6 @@ class BaseAgent:
             return summarized_tool_response, None
         except TotalChunksLimitExceededError:
             logger.exception("Error while summarizing the tool response.")
-            if state.my_task:
-                state.my_task.status = SubTaskStatus.ERROR
             error_dict: dict[str, Any] = {
                 AGENT_MESSAGES: [
                     AIMessage(
@@ -310,8 +270,6 @@ class BaseAgent:
             return "", error_dict
         except Exception:
             logger.exception("Error while summarizing the tool response.")
-            if state.my_task:
-                state.my_task.status = SubTaskStatus.ERROR
             err_response: dict[str, Any] = {
                 AGENT_MESSAGES: [
                     AIMessage(
@@ -324,11 +282,8 @@ class BaseAgent:
             }
             return "", err_response
 
-    def _handle_recursive_limit_error(self, state: BaseAgentState) -> dict[str, Any]:
+    def _handle_recursive_limit_error(self, state: KymaAgentState) -> dict[str, Any]:
         """Handle recursive limit error."""
-        if state.my_task:
-            state.my_task.status = SubTaskStatus.ERROR
-
         logger.error(
             f"Agent reached the recursive limit, steps remaining: {state.remaining_steps}."
         )
@@ -343,7 +298,7 @@ class BaseAgent:
 
     async def _invoke_chain_with_error_handling(
         self,
-        state: BaseAgentState,
+        state: KymaAgentState,
         config: RunnableConfig,
         summarized_tool_response: str = "",
     ) -> tuple[Any, dict[str, Any] | None]:
@@ -353,10 +308,6 @@ class BaseAgent:
             return response, None
         except Exception:
             logger.exception("An error occurred while processing the request.")
-            # Update current subtask status
-            if state.my_task:
-                state.my_task.status = SubTaskStatus.ERROR
-
             error_response = {
                 AGENT_MESSAGES: [
                     AIMessage(
@@ -370,7 +321,7 @@ class BaseAgent:
             return None, error_response
 
     async def _model_node(
-        self, state: BaseAgentState, config: RunnableConfig
+        self, state: KymaAgentState, config: RunnableConfig
     ) -> dict[str, Any]:
         # if the recursive limit is reached, return a message.
         if state.remaining_steps <= AGENT_STEPS_NUMBER:
@@ -378,12 +329,12 @@ class BaseAgent:
 
         # if the last message is a tool message, summarize the tool response if needed.
         summarized_tool_response = ""
-        if state.agent_messages and isinstance(state.agent_messages[-1], ToolMessage):
-            summarized_tool_response, error_response = (
-                await self._summarize_tool_response_with_error_handling(state, config)
-            )
-            if error_response:
-                return error_response
+        # if state.messages and isinstance(state.messages[-1], ToolMessage):
+        #     summarized_tool_response, error_response = (
+        #         await self._summarize_tool_response_with_error_handling(state, config)
+        #     )
+        #     if error_response:
+        #         return error_response
 
         response, error_response = await self._invoke_chain_with_error_handling(
             state, config, summarized_tool_response
@@ -412,25 +363,12 @@ class BaseAgent:
             AGENT_MESSAGES: [response],
         }
 
-    def _finalizer_node(self, state: BaseAgentState, config: RunnableConfig) -> Any:
+    def _finalizer_node(self, state: KymaAgentState, config: RunnableConfig) -> Any:
         """Finalizer node will mark the task as completed."""
-        if state.my_task is not None and state.my_task.status != SubTaskStatus.ERROR:
-            logger.info("Agent task completed")
-            state.my_task.complete()
 
-        agent_pre_message = f"'{state.my_task.description}' , Agent Response - "
-        # Check if agent_messages exists and has at least one element
-        if (
-            hasattr(state, "agent_messages")
-            and state.agent_messages
-            and isinstance(state.agent_messages, list)
-            and len(state.agent_messages) > 0
-            and state.agent_messages[-1]
-            and hasattr(state.agent_messages[-1], "content")
-        ):
-
-            current_content = state.agent_messages[-1].content or ""
-            state.agent_messages[-1].content = agent_pre_message + current_content
+        state.agent_messages[-1].content = (
+            f"'{state.agent_messages[0].content}' , Agent Response - {state.agent_messages[-1].content or ''}"
+        )
 
         # clean all agent messages to avoid populating the checkpoint with unnecessary messages.
         return {
@@ -441,7 +379,6 @@ class BaseAgent:
                     id=state.agent_messages[-1].id,
                 )
             ],
-            SUBTASKS: state.subtasks,
         }
 
     def _build_graph(self, state_class: type) -> CompiledStateGraph:
@@ -449,19 +386,16 @@ class BaseAgent:
         workflow = StateGraph(state_class)
 
         # Define nodes with async awareness
-        workflow.add_node("subtask_selector", self._subtask_selector_node)
         workflow.add_node("agent", self._model_node)
         workflow.add_node(
-            "tools", ToolNode(tools=self.tools, messages_key=AGENT_MESSAGES)
+            "tools",
+            ToolNode(tools=self.tools, messages_key=AGENT_MESSAGES),
         )
         workflow.add_node("finalizer", self._finalizer_node)
         workflow.add_node(SUMMARIZATION, self.summarization.summarization_node)
 
-        # Set the entrypoint: ENTRY --> subtask_selector
-        workflow.set_entry_point("subtask_selector")
-
-        # Define the edge: subtask_selector --> (agent | end)
-        workflow.add_conditional_edges("subtask_selector", subtask_selector_edge)
+        # Set the entrypoint: ENTRY --> agent
+        workflow.set_entry_point("agent")
 
         # Define the edge: agent --> (summarization | finalizer)
         workflow.add_conditional_edges("agent", agent_edge)

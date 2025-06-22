@@ -2,7 +2,6 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from agents.common.agent import BaseAgent
 from agents.common.constants import (
-    AGENT_MESSAGES,
     K8S_AGENT,
 )
 from agents.common.prompts import TOOL_CALLING_ERROR_HANDLING
@@ -22,8 +21,7 @@ class KubernetesAgent(BaseAgent):
         agent_prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", K8S_AGENT_PROMPT),
-                MessagesPlaceholder(variable_name=AGENT_MESSAGES),
-                ("human", "{query}"),
+                MessagesPlaceholder(variable_name="messages"),
                 ("system", TOOL_CALLING_ERROR_HANDLING),
             ]
         )

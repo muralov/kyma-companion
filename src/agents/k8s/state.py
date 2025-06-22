@@ -1,5 +1,5 @@
-from agents.common.state import BaseAgentState
+from agents.kyma.state import KymaAgentState
 
 
-class KubernetesAgentState(BaseAgentState):
+class KubernetesAgentState(KymaAgentState):
     """The state of the Kubernetes agent."""

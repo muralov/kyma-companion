@@ -11,7 +11,7 @@ from langgraph.managed import IsLastStep, RemainingSteps
 from pydantic import BaseModel, Field
 from pydantic.config import ConfigDict
 
-from agents.common.constants import CLUSTER, COMMON, K8S_AGENT, KYMA_AGENT
+from agents.common.constants import CLUSTER, COMMON, FINALIZER, K8S_AGENT, KYMA_AGENT
 from utils.utils import to_sequence_messages
 
 
@@ -134,6 +134,13 @@ class Plan(BaseModel):
     subtasks: list[SubTask] | None = Field(
         description="different subtasks for user query, should be in sorted order"
     )
+
+
+class Route(BaseModel):
+    """Route to the next agent."""
+
+    task_description: str = Field(description="description of the task to be performed")
+    next_agent: Literal[KYMA_AGENT, K8S_AGENT, COMMON, FINALIZER]  # type: ignore
 
 
 class CompanionState(BaseModel):

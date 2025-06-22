@@ -98,3 +98,20 @@ Given the responses from the agents, generate a final response for the user quer
 
 Generate the final response following these guidelines.
 """
+
+ROUTER_SYSTEM_PROMPT = """
+You are a specialized router for Kyma and Kubernetes queries, responsible for routing the planned subtasks to the appropriate agent based on the user query, subtasks and agent responses.
+"""
+
+ROUTER_STEP_INSTRUCTIONS = """
+# INSTRUCTIONS:
+1. Analyse user query and the subtasks:
+  - **User query**: Carefully examine the current query.
+  - **Subtasks**: Analyse the subtasks to understand the context.
+
+2. **Analyze agent responses if available**:
+  - **Agent Responses**: Review the agent responses if available.
+
+3. **Route to the appropriate agent**:
+  - Based on on your analysis, identify the next agent and the task description to route to the agent.
+"""
