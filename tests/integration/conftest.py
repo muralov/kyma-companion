@@ -1,4 +1,4 @@
-import os
+import socket
 from collections.abc import Sequence
 from threading import Thread
 
@@ -18,6 +18,7 @@ from agents.common.state import CompanionState, UserInput
 from agents.graph import CompanionGraph
 from agents.memory.async_redis_checkpointer import AsyncRedisSaver
 from utils.config import get_config
+from utils.models.contants import GPT_41_NANO_MODEL_NAME
 from utils.models.factory import ModelFactory
 from utils.settings import (
     MAIN_EMBEDDING_MODEL_NAME,
@@ -28,8 +29,26 @@ from utils.settings import (
     REDIS_PASSWORD,
 )
 
-# the default port for redis is already in use by the system, so we use a different port for integration tests.
-integration_test_redis_port = 60379
+# integration test configurations.
+integration_test_mini_evaluator_model_name = "gpt-4.1-mini"
+integration_test_main_evaluator_model_name = "gpt-4.1"
+
+
+def get_free_port_in_range(start_port=60000, end_port=60999, host="127.0.0.1") -> int:
+    """
+    Find a free port in the specified range.
+    :param host:
+    :param start_port: The starting port number of the range.
+    :param end_port: The ending port number of the range.
+    """
+    for port in range(start_port, end_port + 1):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind((host, port))
+                return port
+            except OSError:
+                continue
+    raise RuntimeError(f"No free port found in range {start_port}-{end_port}")
 
 
 class LangChainOpenAI(DeepEvalBaseLLM):
@@ -61,24 +80,44 @@ def init_config():
 @pytest.fixture(scope="session")
 def app_models(init_config):
     model_factory = ModelFactory(config=init_config)
-    return {
+    models = {
         MAIN_MODEL_MINI_NAME: model_factory.create_model(MAIN_MODEL_MINI_NAME),
         MAIN_MODEL_NAME: model_factory.create_model(MAIN_MODEL_NAME),
+        GPT_41_NANO_MODEL_NAME: model_factory.create_model(GPT_41_NANO_MODEL_NAME),
         MAIN_EMBEDDING_MODEL_NAME: model_factory.create_model(
             MAIN_EMBEDDING_MODEL_NAME
         ),
     }
 
+    if integration_test_mini_evaluator_model_name not in models:
+        models[integration_test_mini_evaluator_model_name] = model_factory.create_model(
+            integration_test_mini_evaluator_model_name
+        )
+
+    if integration_test_main_evaluator_model_name not in models:
+        models[integration_test_main_evaluator_model_name] = model_factory.create_model(
+            integration_test_main_evaluator_model_name
+        )
+
+    return models
+
 
 @pytest.fixture(scope="session")
 def evaluator_model(app_models):
-    return LangChainOpenAI(app_models[MAIN_MODEL_NAME].llm)
+    # It uses mini model for evaluation.
+    # Use evaluator_main_model, if bigger model is required for evaluation.
+    return LangChainOpenAI(app_models[integration_test_mini_evaluator_model_name].llm)
+
+
+@pytest.fixture(scope="session")
+def evaluator_main_model(app_models):
+    return LangChainOpenAI(app_models[integration_test_main_evaluator_model_name].llm)
 
 
 @pytest.fixture(scope="session")
 def start_fake_redis():
-    os.environ["REDIS_HOST"] = str(integration_test_redis_port)
-    server_address = (REDIS_HOST, integration_test_redis_port)
+    redis_port = get_free_port_in_range()
+    server_address = (REDIS_HOST, redis_port)
     server = TcpFakeServer(server_address)
     t = Thread(target=server.serve_forever, daemon=True)
     t.start()
@@ -90,15 +129,14 @@ def start_fake_redis():
     server.shutdown()
     server.server_close()
     t.join(timeout=5)
-    if "REDIS_HOST" in os.environ:
-        del os.environ["REDIS_HOST"]
 
 
 @pytest.fixture(scope="session")
 def companion_graph(app_models, start_fake_redis):
+    redis_port = start_fake_redis.server_address[1]
     memory = AsyncRedisSaver.from_conn_info(
         host=REDIS_HOST,
-        port=integration_test_redis_port,
+        port=redis_port,
         db=REDIS_DB_NUMBER,
         password=REDIS_PASSWORD,
     )
@@ -160,8 +198,17 @@ def create_mock_state(messages: Sequence[BaseMessage], subtasks=None) -> Compani
     """Create a mock langgraph state for tests."""
     if subtasks is None:
         subtasks = []
+
+    # find the last human message and use its content as user query.
+    last_human_message = next(
+        (msg for msg in reversed(messages) if isinstance(msg, HumanMessage)), None
+    )
+
+    # if no human message is found, use the last message's content.
     user_input = UserInput(
-        query=messages[-1].content,
+        query=(
+            last_human_message.content if last_human_message else messages[-1].content
+        ),
         resource_kind=None,
         resource_api_version=None,
         resource_name=None,
@@ -173,6 +220,5 @@ def create_mock_state(messages: Sequence[BaseMessage], subtasks=None) -> Compani
         messages=messages,
         next="",
         subtasks=subtasks,
-        final_response="",
         error=None,
     )

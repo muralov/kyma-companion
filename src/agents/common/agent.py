@@ -19,14 +19,14 @@ from agents.common.constants import (
     ERROR,
     MESSAGES_SUMMARY,
     SUMMARIZATION,
-    TOOL_RESPONSE_TOKEN_COUNT_LIMIT,
-    TOTAL_CHUNKS_LIMIT,
 )
 from agents.common.error_handler import (
     token_counting_error_handler,
     tool_parsing_error_handler,
 )
 from agents.common.exceptions import TotalChunksLimitExceededError
+from agents.common.prompts import JOULE_CONTEXT_INFORMATION
+from agents.common.state import BaseAgentState, SubTaskStatus
 from agents.common.utils import (
     compute_string_token_count,
     convert_string_to_object,
@@ -42,6 +42,8 @@ from utils.settings import (
     GRAPH_STEP_TIMEOUT_SECONDS,
     SUMMARIZATION_TOKEN_LOWER_LIMIT,
     SUMMARIZATION_TOKEN_UPPER_LIMIT,
+    TOOL_RESPONSE_TOKEN_COUNT_LIMIT,
+    TOTAL_CHUNKS_LIMIT,
 )
 
 logger = get_logger(__name__)
@@ -197,7 +199,7 @@ class BaseAgent:
         token_count = self._compute_token_count(str(tool_responses))
         logger.info(f"Tool Response Token count: {token_count}")
 
-        model_token_limit = TOOL_RESPONSE_TOKEN_COUNT_LIMIT[self.model.name]
+        model_token_limit = TOOL_RESPONSE_TOKEN_COUNT_LIMIT
         if token_count <= model_token_limit:
             logger.debug("Tool response within token limit, no summarization needed")
             return ""
@@ -255,13 +257,15 @@ class BaseAgent:
             return summarized_tool_response, None
         except TotalChunksLimitExceededError:
             logger.exception("Error while summarizing the tool response.")
+            if state.my_task:
+                state.my_task.status = SubTaskStatus.COMPLETED
             error_dict: dict[str, Any] = {
                 "messages": [
                     AIMessage(
                         content="Your request is too broad and requires analyzing "
                         "more resources than allowed at once. "
                         "Please specify a particular resource you'd like to analyze so "
-                        "I can assist you more effectively.",
+                        f"I can assist you more effectively. {JOULE_CONTEXT_INFORMATION}",
                         name=self.name,
                     )
                 ]
@@ -398,7 +402,7 @@ class BaseAgent:
 
     def _build_graph(self, state_class: type) -> CompiledStateGraph:
         # Define a new graph
-        workflow = StateGraph(state_class)
+        workflow: StateGraph = StateGraph(state_class)
 
         # Define nodes with async awareness
         workflow.add_node("agent", self._model_node)

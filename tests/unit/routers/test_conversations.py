@@ -1,4 +1,5 @@
 import json
+import uuid
 from collections.abc import AsyncGenerator
 from http import HTTPStatus
 from unittest.mock import AsyncMock, Mock, patch
@@ -8,12 +9,14 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from agents.common.constants import ERROR_RATE_LIMIT_CODE
+from agents.common.constants import ERROR_RATE_LIMIT_CODE, UNKNOWN
 from agents.common.data import Message
 from main import app
 from routers.conversations import (
     authorize_user,
     check_token_usage,
+    enforce_query_token_limit,
+    extract_user_identifier,
     init_conversation_service,
 )
 from services.conversation import IService
@@ -30,7 +33,9 @@ class MockService(IService):
     def __init__(self, expected_error=None):
         self.expected_error = expected_error
 
-    def new_conversation(self, k8s_client: IK8sClient, message: Message) -> list[str]:
+    async def new_conversation(
+        self, k8s_client: IK8sClient, message: Message
+    ) -> list[str]:
         if self.expected_error:
             raise self.expected_error
         return ["Test question 1", "Test question 2", "Test question 3"]
@@ -45,7 +50,10 @@ class MockService(IService):
         ]
 
     async def authorize_user(self, conversation_id: str, user_identifier: str) -> bool:
-        return user_identifier != "UNAUTHORIZED"
+        return (
+            user_identifier
+            != "87a5e00b7c0b4287fea96bbeabc05fdfdaacba5346b606366be40fbf3046cc9a"
+        )
 
     async def is_usage_limit_exceeded(
         self, cluster_id: str
@@ -65,6 +73,14 @@ class MockService(IService):
     ) -> AsyncGenerator[bytes, None]:
         if self.expected_error:
             raise self.expected_error
+        if message.resource_kind == UNKNOWN:
+            yield (
+                b'{"KymaAgent": {"messages": [{"content": '
+                b'"Resource information is not available. Ask the user, if you need resource information like kind, name or namespace.", "additional_kwargs": {}, '
+                b'"response_metadata": {}, "type": "ai", "name": "Supervisor", "id": null, '
+                b'"example": false, "tool_calls": [], "invalid_tool_calls": [], "usage_metadata": null}]}}'
+            )
+
         yield (
             b'{"KymaAgent": {"messages": [{"content": '
             b'"To create an API Rule in Kyma to expose a service externally", "additional_kwargs": {}, '
@@ -172,7 +188,7 @@ def client_factory():
                 "x-cluster-url": "https://api.k8s.example.com",
                 "x-cluster-certificate-authority-data": "non-empty-ca-data",
             },
-            1,
+            uuid.uuid4(),
             {
                 "query": "How to expose a Kyma application? What is the reason of getting crashloopbackoff in k8s pod?",
                 "resource_kind": "Cluster",
@@ -190,7 +206,7 @@ def client_factory():
                 "x-cluster-url": "https://api.k8s.example.com",
                 "x-cluster-certificate-authority-data": "non-empty-ca-data",
             },
-            1,
+            uuid.uuid4(),
             {
                 "query": "How to expose a Kyma application? What is the reason of getting crashloopbackoff in k8s pod?",
                 "resource_kind": "Cluster",
@@ -206,7 +222,7 @@ def client_factory():
                 "x-cluster-url": "https://api.k8s.example.com",
                 "x-cluster-certificate-authority-data": "non-empty-ca-data",
             },
-            2,
+            uuid.uuid4(),
             {
                 "query": "How to expose a Kyma application? What is the reason of getting crashloopbackoff in k8s pod?",
                 "resource_kind": "Pod",
@@ -218,7 +234,7 @@ def client_factory():
         ),
         (
             {},
-            3,
+            uuid.uuid4(),
             {
                 "query": "should return error when k8s headers are missing",
                 "resource_kind": "Pod",
@@ -234,7 +250,7 @@ def client_factory():
                 "x-cluster-url": "https://api.k8s.example.com",
                 "x-cluster-certificate-authority-data": "non-empty-ca-data",
             },
-            4,
+            uuid.uuid4(),
             {
                 "query": "How to expose a Kyma application? What is the reason of getting crashloopbackoff in k8s pod?",
                 "resource_kind": "",
@@ -252,7 +268,7 @@ def client_factory():
                 "x-cluster-url": "https://api.k8s.example.com",
                 "x-cluster-certificate-authority-data": "non-empty-ca-data",
             },
-            5,
+            uuid.uuid4(),
             {
                 "query": "How to expose a Kyma application? What is the reason of getting crashloopbackoff in k8s pod?",
                 "resource_kind": "",
@@ -268,7 +284,7 @@ def client_factory():
                 "x-cluster-url": "https://api.EXCEEDED.example.com",
                 "x-cluster-certificate-authority-data": "non-empty-ca-data",
             },
-            6,
+            uuid.uuid4(),
             {
                 "query": "Test query",
                 "resource_kind": "",
@@ -294,7 +310,7 @@ def client_factory():
                 "x-cluster-url": "https://api.k8s.example.com",
                 "x-cluster-certificate-authority-data": "non-empty-ca-data",
             },
-            3,
+            uuid.uuid4(),
             {
                 "query": "should return error when k8s auth headers are missing",
                 "resource_kind": "Pod",
@@ -310,7 +326,7 @@ def client_factory():
                 "x-cluster-certificate-authority-data": "non-empty-ca-data",
                 "X-Client-Certificate-Data": SAMPLE_CLIENT_CERTIFICATE_DATA,
             },
-            3,
+            uuid.uuid4(),
             {
                 "query": "should return error when k8s X-Client-Key-Data auth header is missing",
                 "resource_kind": "Pod",
@@ -326,7 +342,7 @@ def client_factory():
                 "x-cluster-certificate-authority-data": "non-empty-ca-data",
                 "X-Client-Key-Data": "non-empty-client-key-data",
             },
-            3,
+            uuid.uuid4(),
             {
                 "query": "should return error when k8s X-Client-Certificate-Data auth header is missing",
                 "resource_kind": "Pod",
@@ -343,7 +359,7 @@ def client_factory():
                 "x-cluster-url": "https://api.k8s.example.com",
                 "x-cluster-certificate-authority-data": "non-empty-ca-data",
             },
-            9,
+            uuid.uuid4(),
             {
                 "query": "How to expose a Kyma application? What is the reason of getting crashloopbackoff in k8s pod?",
                 "resource_kind": "PodInvalid",
@@ -352,10 +368,47 @@ def client_factory():
                 "namespace": "default",
             },
             {
-                "status_code": 400,
-                "content-type": "application/json",
-                "expected_error_msg": "Invalid resource context info",
+                "status_code": 200,
+                "content-type": "text/event-stream; charset=utf-8",
+                "expected_chunk": b'{"event": "agent_action", "data": {"agent": "KymaAgent", "answer": {"content": '
+                b'"Resource information is not available. Ask the user, if you need resource information like kind, name or namespace.", "tasks": []}, "error": null}}\n',
             },
+        ),
+        (
+            # should return 422, when conversation_id is not provided.
+            {
+                "X-Client-Certificate-Data": SAMPLE_CLIENT_CERTIFICATE_DATA,
+                "X-Client-Key-Data": "non-empty-client-key-data",
+                "x-cluster-url": "https://api.k8s.example.com",
+                "x-cluster-certificate-authority-data": "non-empty-ca-data",
+            },
+            None,
+            {
+                "query": "How to expose a Kyma application? What is the reason of getting crashloopbackoff in k8s pod?",
+                "resource_kind": "Cluster",
+                "resource_api_version": "",
+                "resource_name": "",
+                "namespace": "",
+            },
+            {"status_code": 422, "content-type": "application/json"},
+        ),
+        (
+            # should return 422, when conversation_id is not a valid uuid.
+            {
+                "X-Client-Certificate-Data": SAMPLE_CLIENT_CERTIFICATE_DATA,
+                "X-Client-Key-Data": "non-empty-client-key-data",
+                "x-cluster-url": "https://api.k8s.example.com",
+                "x-cluster-certificate-authority-data": "non-empty-ca-data",
+            },
+            "abcdef",
+            {
+                "query": "How to expose a Kyma application? What is the reason of getting crashloopbackoff in k8s pod?",
+                "resource_kind": "Cluster",
+                "resource_api_version": "",
+                "resource_name": "",
+                "namespace": "",
+            },
+            {"status_code": 422, "content-type": "application/json"},
         ),
     ],
 )
@@ -419,6 +472,9 @@ def test_messages_endpoint(
         return
 
     content = response.content
+
+    if "expected_chunk" in expected_output:
+        assert expected_output["expected_chunk"] in content
 
     assert (
         b'{"event": "agent_action", "data": {"agent": "KymaAgent", "answer": {"content": '
@@ -511,18 +567,20 @@ def test_messages_endpoint(
                 "body": {
                     "detail": [
                         {
-                            "type": "missing",
+                            "input": None,
                             "loc": ["header", "x-cluster-url"],
                             "msg": "Field required",
-                            "input": None,
+                            "type": "missing",
                         },
                         {
-                            "type": "missing",
+                            "input": None,
                             "loc": ["header", "x-cluster-certificate-authority-data"],
                             "msg": "Field required",
-                            "input": None,
+                            "type": "missing",
                         },
-                    ]
+                    ],
+                    "error": "Validation Error",
+                    "message": "Request validation failed",
                 },
             },
         ),
@@ -544,7 +602,9 @@ def test_messages_endpoint(
                 "status_code": 422,
                 "content-type": "application/json",
                 "body": {
-                    "detail": "Either x-k8s-authorization header or x-client-certificate-data and x-client-key-data headers are required."
+                    "detail": [],
+                    "error": "Validation Error",
+                    "message": "Request validation failed",
                 },
             },
         ),
@@ -566,7 +626,9 @@ def test_messages_endpoint(
                 "status_code": 422,
                 "content-type": "application/json",
                 "body": {
-                    "detail": "Either x-k8s-authorization header or x-client-certificate-data and x-client-key-data headers are required."
+                    "detail": [],
+                    "error": "Validation Error",
+                    "message": "Request validation failed",
                 },
             },
         ),
@@ -588,7 +650,36 @@ def test_messages_endpoint(
                 "status_code": 500,
                 "content-type": "application/json",
                 "body": {
-                    "detail": 'service failed, Request data: {"resource_kind":"Pod","resource_name":"nginx-123","resource_api_version":"v1","namespace":"default"}'
+                    "error": "Internal Server Error",
+                    "message": "Something went wrong.",
+                },
+            },
+        ),
+        (
+            "should return token usage exceeded error",
+            {
+                "x-k8s-authorization": "non-empty-auth",
+                "x-cluster-url": "https://api.EXCEEDED.example.com",
+                "x-cluster-certificate-authority-data": "non-empty-ca-data",
+            },
+            {
+                "resource_kind": "Pod",
+                "resource_api_version": "v1",
+                "resource_name": "nginx-123",
+                "namespace": "default",
+            },
+            None,
+            {
+                "status_code": ERROR_RATE_LIMIT_CODE,
+                "content-type": "application/json",
+                "body": {
+                    "current_usage": 1000,
+                    "error": "Token usage limit exceeded",
+                    "limit": 1000,
+                    "message": "Token usage limit of 1000 exceeded for this cluster. To ensure a "
+                    "fair usage, Joule controls the number of requests a "
+                    "cluster can make within 24 hours.",
+                    "time_remaining_seconds": 60,
                 },
             },
         ),
@@ -706,7 +797,10 @@ def test_init_conversation(
             {
                 "status_code": 500,
                 "content-type": "application/json",
-                "body": {"detail": "service failed"},
+                "body": {
+                    "error": "Internal Server Error",
+                    "message": "Something went wrong.",
+                },
             },
         ),
         (
@@ -723,7 +817,7 @@ def test_init_conversation(
             {
                 "status_code": 403,
                 "content-type": "application/json",
-                "body": {"detail": "User not authorized to access the conversation"},
+                "body": {"error": "Unauthorized", "message": "Authentication failed"},
             },
         ),
         (
@@ -739,13 +833,13 @@ def test_init_conversation(
                 "status_code": ERROR_RATE_LIMIT_CODE,
                 "content-type": "application/json",
                 "body": {
-                    "detail": {
-                        "current_usage": 1000,
-                        "error": "Rate limit exceeded",
-                        "limit": 1000,
-                        "message": "Daily token limit of 1000 exceeded for this cluster",
-                        "time_remaining_seconds": 60,
-                    },
+                    "current_usage": 1000,
+                    "error": "Token usage limit exceeded",
+                    "limit": 1000,
+                    "message": "Token usage limit of 1000 exceeded for this cluster. To ensure a "
+                    "fair usage, Joule controls the number of requests a "
+                    "cluster can make within 24 hours.",
+                    "time_remaining_seconds": 60,
                 },
             },
         ),
@@ -760,18 +854,20 @@ def test_init_conversation(
                 "body": {
                     "detail": [
                         {
-                            "type": "missing",
+                            "input": None,
                             "loc": ["header", "x-cluster-url"],
                             "msg": "Field required",
-                            "input": None,
+                            "type": "missing",
                         },
                         {
-                            "type": "missing",
+                            "input": None,
                             "loc": ["header", "x-cluster-certificate-authority-data"],
                             "msg": "Field required",
-                            "input": None,
+                            "type": "missing",
                         },
-                    ]
+                    ],
+                    "error": "Validation Error",
+                    "message": "Request validation failed",
                 },
             },
         ),
@@ -788,7 +884,9 @@ def test_init_conversation(
                 "status_code": 422,
                 "content-type": "application/json",
                 "body": {
-                    "detail": "Either x-k8s-authorization header or x-client-certificate-data and x-client-key-data headers are required."
+                    "detail": [],
+                    "error": "Validation Error",
+                    "message": "Request validation failed",
                 },
             },
         ),
@@ -805,7 +903,41 @@ def test_init_conversation(
                 "status_code": 422,
                 "content-type": "application/json",
                 "body": {
-                    "detail": "Either x-k8s-authorization header or x-client-certificate-data and x-client-key-data headers are required."
+                    "detail": [],
+                    "error": "Validation Error",
+                    "message": "Request validation failed",
+                },
+            },
+        ),
+        (
+            # should return error when conversation_id is not a valid uuid.
+            {
+                "X-Client-Certificate-Data": SAMPLE_CLIENT_CERTIFICATE_DATA,
+                "X-Client-Key-Data": "non-empty-client-key-data",
+                "x-cluster-url": "https://api.k8s.example.com",
+                "x-cluster-certificate-authority-data": "non-empty-ca-data",
+            },
+            "abcdef",
+            None,
+            {
+                "status_code": 422,
+                "content-type": "application/json",
+                "body": {
+                    "detail": [
+                        {
+                            "ctx": {
+                                "error": "invalid length: expected length 32 for simple "
+                                "format, found 6"
+                            },
+                            "input": "abcdef",
+                            "loc": ["path", "conversation_id"],
+                            "msg": "Input should be a valid UUID, invalid length: expected "
+                            "length 32 for simple format, found 6",
+                            "type": "uuid_parsing",
+                        }
+                    ],
+                    "error": "Validation Error",
+                    "message": "Request validation failed",
                 },
             },
         ),
@@ -897,25 +1029,69 @@ async def test_check_token_usage(cluster_url, usage_report, expected_exception):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "test_description, conversation_id, token, certificate_data, user_identifier, is_authorized, expected_exception",
+    "test_description, conversation_id, user_identifier, is_authorized, expected_exception",
     [
         (
-            "valid token, user authorized",
+            "user authorized",
             "conversation1",
-            jwt.encode({"sub": "user1"}, "secret", algorithm="HS256"),
-            None,
-            "user1",
+            "0a041b9462caa4a31bac3567e0b6e6fd9100787db2ab433d96f6d178cabfce90",
             True,
             None,
         ),
         (
-            "valid token, user not authorized",
+            "user not authorized",
             "conversation2",
-            jwt.encode({"sub": "user2"}, "secret", algorithm="HS256"),
-            None,
             "user2",
             False,
             HTTPException,
+        ),
+    ],
+)
+async def test_authorize_user(
+    test_description,
+    conversation_id,
+    user_identifier,
+    is_authorized,
+    expected_exception,
+):
+    # given
+    # Mock the conversation_service
+    mock_conversation_service = Mock()
+    mock_conversation_service.authorize_user = AsyncMock(return_value=is_authorized)
+
+    # when / then
+    if expected_exception or not is_authorized:
+        with pytest.raises(expected_exception):
+            await authorize_user(
+                conversation_id, user_identifier, mock_conversation_service
+            )
+    else:
+        await authorize_user(
+            conversation_id, user_identifier, mock_conversation_service
+        )
+        mock_conversation_service.authorize_user.assert_called_once_with(
+            conversation_id, user_identifier
+        )
+
+
+@pytest.mark.parametrize(
+    "test_description, conversation_id, token, certificate_data, expected_user_identifier, expected_exception",
+    [
+        (
+            "valid token 1",
+            "conversation1",
+            jwt.encode({"sub": "user1"}, "secret", algorithm="HS256"),
+            None,
+            "0a041b9462caa4a31bac3567e0b6e6fd9100787db2ab433d96f6d178cabfce90",
+            None,
+        ),
+        (
+            "valid token 2",
+            "conversation2",
+            jwt.encode({"sub": "user2"}, "secret", algorithm="HS256"),
+            None,
+            "6025d18fe48abd45168528f18a82e265dd98d421a7084aa09f61b341703901a3",
+            None,
         ),
         (
             "invalid token",
@@ -923,16 +1099,14 @@ async def test_check_token_usage(cluster_url, usage_report, expected_exception):
             "invalid_token",
             None,
             None,
-            None,
             HTTPException,
         ),
         (
-            "valid client certificate, user authorized",
+            "valid client certificate",
             "conversation1",
             None,
             SAMPLE_CLIENT_CERTIFICATE_DATA,
-            "system:admin",
-            True,
+            "259c31ec6667be354fc6d007a452e2d09002bc396b2b6da976980b0cca0b8ced",
             None,
         ),
         (
@@ -941,18 +1115,16 @@ async def test_check_token_usage(cluster_url, usage_report, expected_exception):
             None,
             "invalid-client-certificate",
             None,
-            None,
             HTTPException,
         ),
     ],
 )
-async def test_authorize_user(
+def test_extract_user_identifier(
     test_description,
     conversation_id,
     token,
     certificate_data,
-    user_identifier,
-    is_authorized,
+    expected_user_identifier,
     expected_exception,
 ):
     # given
@@ -964,20 +1136,45 @@ async def test_authorize_user(
         x_client_key_data="non-empty-client-key-data",
     )
 
-    # Mock the conversation_service
-    mock_conversation_service = Mock()
-    mock_conversation_service.authorize_user = AsyncMock(return_value=is_authorized)
-
     # when / then
-    if expected_exception or not is_authorized:
+    if expected_exception:
         with pytest.raises(expected_exception):
-            await authorize_user(
-                conversation_id, k8s_auth_headers, mock_conversation_service
-            )
+            extract_user_identifier(k8s_auth_headers)
     else:
-        await authorize_user(
-            conversation_id, k8s_auth_headers, mock_conversation_service
-        )
-        mock_conversation_service.authorize_user.assert_called_once_with(
-            conversation_id, user_identifier
-        )
+        user_identifier = extract_user_identifier(k8s_auth_headers)
+        assert user_identifier == expected_user_identifier
+
+
+@pytest.mark.parametrize(
+    "mock_token_count, should_raise_exception",
+    [
+        (500, False),  # Within limit
+        (9000, True),  # Exceeds limit
+    ],
+)
+def test_enforce_query_token_limit(mock_token_count, should_raise_exception):
+    message = Message(
+        query="What is Kubernetes?",
+        resource_kind="Pod",
+        resource_api_version="v1",
+        resource_name="mypod",
+        namespace="default",
+        resource_scope=None,
+        resource_related_to=None,
+    )
+
+    with patch(
+        "routers.conversations.compute_string_token_count"
+    ) as mock_token_counter:
+        mock_token_counter.return_value = mock_token_count
+
+        if should_raise_exception:
+            with pytest.raises(HTTPException) as exc_info:
+                enforce_query_token_limit(message)
+
+            assert exc_info.value.status_code == HTTPStatus.BAD_REQUEST
+            assert (
+                exc_info.value.detail == "Input Query exceeds the allowed token limit."
+            )
+        else:
+            enforce_query_token_limit(message)  # Should not raise

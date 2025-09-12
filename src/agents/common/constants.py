@@ -1,11 +1,11 @@
-from collections import defaultdict
-
 PLANNER = "Planner"
 
 SUMMARIZATION = "Summarization"
 INITIAL_SUMMARIZATION = "InitialSummarization"
 
 CLUSTER = "cluster"
+
+UNKNOWN = "unknown"
 
 NAMESPACED = "namespaced"
 
@@ -63,16 +63,23 @@ SUCCESS_CODE = 200
 
 ERROR_RATE_LIMIT_CODE = 429
 
-K8S_API_PAGINATION_LIMIT = 50
+FEEDBACK = "feedback"
 
-K8S_API_PAGINATION_MAX_PAGE = 2
+IS_FEEDBACK = "is_feedback"
 
-TOOL_RESPONSE_TOKEN_COUNT_LIMIT = defaultdict(
-    lambda: 16000,  # Default token limit if model not found
-    {
-        "gpt-4.1": 100000,  # GPT-4.1 supports 1,047,576 input and 32,768 output tokens
-        "gpt-4.1-mini": 100000,  # GPT-4.1 Mini supports 1,047,576 input and 32,768 output tokens
-    },
+RESPONSE_QUERY_OUTSIDE_DOMAIN = (
+    "This question appears to be outside my domain of expertise. "
+    "If you have any technical or Kyma related questions, I'd be happy to help."
 )
 
-TOTAL_CHUNKS_LIMIT = 3  # Limit the number of allowed chunking of tool response
+RESPONSE_HELLO = "Hello! How can I assist you with Kyma or Kubernetes today?"
+
+RESPONSE_UNABLE_TO_PROCESS = (
+    "I'm currently unable to process your request. "
+    "Please try again later or ask a different question."
+)
+
+ERROR_RESPONSE = (
+    "We encountered an error while processing your request. "
+    "Please try again shortly. Thank you for your patience!"
+)

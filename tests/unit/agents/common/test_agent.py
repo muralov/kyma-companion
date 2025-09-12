@@ -15,7 +15,7 @@ from langchain_core.prompts import (
     SystemMessagePromptTemplate,
 )
 from langchain_core.runnables import RunnableLambda
-from langgraph.graph.graph import CompiledGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from agents.common.agent import AGENT_STEPS_NUMBER, BaseAgent
 from agents.common.constants import AGENT_MESSAGES, ERROR
@@ -79,7 +79,7 @@ class TestBaseAgent:
 
         # Then
         assert result is not None
-        assert isinstance(result, CompiledGraph)
+        assert isinstance(result, CompiledStateGraph)
 
     def test_create_chain(self):
         # Given
@@ -344,7 +344,7 @@ class TestBaseAgent:
         token_limit = 1000
         monkeypatch.setattr(
             "agents.common.agent.TOOL_RESPONSE_TOKEN_COUNT_LIMIT",
-            {agent.model.name: token_limit},
+            token_limit,
         )
         monkeypatch.setattr("agents.common.agent.TOTAL_CHUNKS_LIMIT", 10)
 
@@ -411,7 +411,7 @@ class TestBaseAgent:
         )
         monkeypatch.setattr(
             "agents.common.agent.TOOL_RESPONSE_TOKEN_COUNT_LIMIT",
-            {agent.model.name: token_limit},
+            token_limit,
         )
         monkeypatch.setattr("agents.common.agent.TOTAL_CHUNKS_LIMIT", chunks_limit)
 

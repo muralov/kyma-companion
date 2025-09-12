@@ -1,8 +1,11 @@
+from unittest.mock import Mock
+
 import pytest
 from langchain_core.messages import AIMessage
 
 from agents.common.constants import FINALIZER, MESSAGES, NEW_YAML, UPDATE_YAML
 from agents.common.response_converter import ResponseConverter
+from services.k8s import IK8sClient
 
 yaml_new_sample_with_link_1 = """```yaml
    apiVersion: v1
@@ -120,9 +123,38 @@ spec:
 ```"""
 
 
+yaml_update_without_yaml_marker = """apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  namespace: default
+spec:
+  replicas: 5"""
+
+yaml_new_without_yaml_marker = """apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  namespace: default
+spec:
+  replicas: 3"""
+
+
 @pytest.fixture
 def response_converter():
-    return ResponseConverter()
+    def mock_get_namespace(name):
+        existing_namespaces = [
+            "default",
+            "kube-system",
+            "test-ns",
+            "kyma-system",
+            "nginx-oom",
+        ]
+        return name in existing_namespaces
+
+    k8s_client = Mock(IK8sClient)
+    k8s_client.get_namespace.side_effect = mock_get_namespace
+    return ResponseConverter(k8s_client=k8s_client)
 
 
 @pytest.mark.parametrize(
@@ -258,6 +290,15 @@ def test_parse_yamls(response_converter, description, yaml_content, expected_res
             "/namespaces/test-ns/Deployment",
         ),
         (
+            "should generate link for new deployment with default namespace, when namespace do not exist",
+            {
+                "metadata": {"namespace": "non-existing-ns123", "name": "test-deploy"},
+                "kind": "Deployment",
+            },
+            NEW_YAML,
+            "/namespaces/default/Deployment",
+        ),
+        (
             "Generate link for updating old deployment",
             {
                 "metadata": {"namespace": "test-ns", "name": "test-deploy"},
@@ -267,6 +308,15 @@ def test_parse_yamls(response_converter, description, yaml_content, expected_res
             "/namespaces/test-ns/Deployment/test-deploy",
         ),
         (
+            "should not generate link for updating old deployment when namespace do not exist",
+            {
+                "metadata": {"namespace": "non-existing-ns123", "name": "test-deploy"},
+                "kind": "Deployment",
+            },
+            UPDATE_YAML,
+            None,
+        ),
+        (
             "Test no link generation",
             {"metadata": {"namespace": "test-ns"}, "kind": "Deployment"},
             NEW_YAML,
@@ -274,13 +324,12 @@ def test_parse_yamls(response_converter, description, yaml_content, expected_res
         ),
     ],
 )
-def test_generate_resource_link(
+@pytest.mark.asyncio
+async def test_generate_resource_link(
     response_converter, description, yaml_config, link_type, expected_link
 ):
-    assert (
-        response_converter._generate_resource_link(yaml_config, link_type)
-        == expected_link
-    )
+    result = await response_converter._generate_resource_link(yaml_config, link_type)
+    assert result == expected_link
 
 
 @pytest.mark.parametrize(
@@ -314,6 +363,76 @@ def test_create_html_nested_yaml(
     )
     for content in expected_contents:
         assert content in html
+
+
+@pytest.mark.parametrize(
+    "yaml_config,resource_link,link_type,expected_yaml_in_output",
+    [
+        # YAML already has markers
+        (
+            "```yaml\nkey: value\n```",
+            "https://example.com/resource",
+            "New",
+            "```yaml\nkey: value\n```",
+        ),
+        # YAML without markers - should be added
+        (
+            yaml_new_without_yaml_marker,
+            "https://example.com/update",
+            "New",
+            f"```yaml\n{yaml_new_without_yaml_marker}\n```",
+        ),
+        # YAML without markers - should be added
+        (
+            yaml_update_without_yaml_marker,
+            "https://k8s.example.com/apply",
+            "Update",
+            f"```yaml\n{yaml_update_without_yaml_marker}\n```",
+        ),
+    ],
+)
+def test_yaml_without_yaml_marker(
+    response_converter, yaml_config, resource_link, link_type, expected_yaml_in_output
+):
+    """Test _create_html_nested_yaml with various input combinations"""
+
+    # Act
+    result = response_converter._create_html_nested_yaml(
+        yaml_config, resource_link, link_type
+    )
+
+    # Assert
+    assert isinstance(result, str)
+    assert expected_yaml_in_output in result
+    assert f'link-type="{link_type}"' in result
+    assert f"[Apply]({resource_link})" in result
+    assert '<div class="yaml-block">' in result
+    assert '<div class="yaml">' in result
+    assert '<div class="link"' in result
+
+
+@pytest.mark.parametrize(
+    "yaml_config,should_add_markers",
+    [
+        (yaml_new_sample_with_link_1, False),
+        (yaml_update_sample_with_link_1, False),
+        (yaml_update_without_yaml_marker, True),
+        (yaml_new_without_yaml_marker, True),
+    ],
+)
+def test_yaml_marker_detection(response_converter, yaml_config, should_add_markers):
+    """Test YAML marker detection and addition logic"""
+
+    result = response_converter._create_html_nested_yaml(
+        yaml_config, "https://example.com", "New"
+    )
+
+    if should_add_markers:
+        # Should contain the added markers
+        assert "```yaml\n" + yaml_config + "\n```" in result
+    else:
+        # Should contain original YAML as-is
+        assert yaml_config in result
 
 
 @pytest.mark.parametrize(
@@ -392,21 +511,10 @@ def test_replace_yaml_with_html(
             ],
             NEW_YAML,
             [
-                f"""
-            <div class="yaml-block">
-                <div class="yaml">
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: nginx-deployment
-  namespace: nginx-oom
-                </div>
-
-                <div class="link" link-type="{NEW_YAML}">
-                    [Apply](/namespaces/nginx-oom/Deployment)
-                </div>
-            </div>
-            """
+                '<div class="yaml-block"> <div class="yaml"> ```yaml apiVersion: apps/v1 '
+                "kind: Deployment metadata: name: nginx-deployment namespace: nginx-oom ``` "
+                '</div> <div class="link" link-type="New"> '
+                "[Apply](/namespaces/nginx-oom/Deployment) </div> </div>"
             ],
         ),
         (
@@ -422,29 +530,21 @@ metadata:
             UPDATE_YAML,
             [
                 """invalid: :""",
-                f"""
-            <div class="yaml-block">
-                <div class="yaml">
-apiVersion: apps/v1
-kind: Service
-metadata:
-  name: test-svc
-  namespace: test-ns
-                </div>
-
-                <div class="link" link-type="{UPDATE_YAML}">
-                    [Apply](/namespaces/test-ns/Service/test-svc)
-                </div>
-            </div>
-            """,
+                '<div class="yaml-block"> <div class="yaml"> ```yaml apiVersion: apps/v1 '
+                "kind: Service metadata: name: test-svc namespace: test-ns ``` </div> <div "
+                'class="link" link-type="Update"> '
+                "[Apply](/namespaces/test-ns/Service/test-svc) </div> </div>",
             ],
         ),
         ([], NEW_YAML, []),
     ],
     ids=["single_valid_yaml", "mixed_valid_invalid", "empty_list"],
 )
-def test_create_replacement_list(response_converter, yaml_list, yaml_type, expected):
-    result = response_converter._create_replacement_list(yaml_list, yaml_type)
+@pytest.mark.asyncio
+async def test_create_replacement_list(
+    response_converter, yaml_list, yaml_type, expected
+):
+    result = await response_converter._create_replacement_list(yaml_list, yaml_type)
 
     # Compare lengths
     assert len(result) == len(expected)
@@ -506,6 +606,46 @@ def test_create_replacement_list(response_converter, yaml_list, yaml_type, expec
 - Implement Pod Disruption Budgets to maintain application availability during maintenance.
         """,
         ),
+        (  # single yaml with link, with yaml block no space in beginning and in end,  <YAML-NEW> block should be converted to HTML block
+            f"""Resource Management:
+- Define resource requests and limits for your pods to ensure efficient resource utilization. For example:<YAML-NEW>{yaml_new_sample_with_link_1}
+</YAML-NEW>- Use Horizontal Pod Autoscaler to automatically scale your applications based on demand.
+- Implement Pod Disruption Budgets to maintain application availability during maintenance.""",
+            f"""Resource Management:
+- Define resource requests and limits for your pods to ensure efficient resource utilization. For example:
+<div class="yaml-block">
+            <div class="yaml">
+            {yaml_new_sample_with_link_1}
+            </div>
+            <div class="link" link-type="New">
+                [Apply](/namespaces/default/Pod)
+            </div>
+        </div>
+        - Use Horizontal Pod Autoscaler to automatically scale your applications based on demand.
+- Implement Pod Disruption Budgets to maintain application availability during maintenance.
+        """,
+        ),
+        (  # single yaml with link, with yaml block no space in beginning and in end,  <YAML-NEW> block should be converted to HTML block
+            f"""Resource Management:
+- Define resource requests and limits for your pods to ensure efficient resource utilization. For example:<YAML-NEW>{yaml_new_without_yaml_marker}
+</YAML-NEW>- Use Horizontal Pod Autoscaler to automatically scale your applications based on demand.
+- Implement Pod Disruption Budgets to maintain application availability during maintenance.""",
+            f"""Resource Management:
+- Define resource requests and limits for your pods to ensure efficient resource utilization. For example:
+<div class="yaml-block">
+            <div class="yaml">
+            ```yaml
+            {yaml_new_without_yaml_marker}
+            ```
+            </div>
+            <div class="link" link-type="New">
+                [Apply](/namespaces/default/Deployment)
+            </div>
+        </div>
+        - Use Horizontal Pod Autoscaler to automatically scale your applications based on demand.
+- Implement Pod Disruption Budgets to maintain application availability during maintenance.
+        """,
+        ),
         (
             # update yaml without link ,<YAML-UPDATE> block should be removed
             f"""4. **(Optional) Modify the Function's Source Code**:
@@ -540,13 +680,52 @@ def test_create_replacement_list(response_converter, yaml_list, yaml_type, expec
      ```
 """,
         ),
+        (
+            # single yaml with valid link, <YAML-NEW> without the yaml marker, yaml marker should be added
+            f"""<YAML-NEW>
+{yaml_new_without_yaml_marker}
+</YAML-NEW>""",
+            f"""
+        <div class="yaml-block">
+            <div class="yaml">
+            ```yaml
+            {yaml_new_without_yaml_marker}
+            ```
+            </div>
+            <div class="link" link-type="New">
+                [Apply](/namespaces/default/Deployment)
+            </div>
+        </div>
+        """,
+        ),
+        (
+            # single yaml with valid link, <YAML-UPDATE> without the yaml marker, yaml marker should be added
+            f"""<YAML-UPDATE>
+{yaml_update_without_yaml_marker}
+</YAML-UPDATE>""",
+            f"""
+        <div class="yaml-block">
+            <div class="yaml">
+            ```yaml
+            {yaml_update_without_yaml_marker}
+            ```
+            </div>
+            <div class="link" link-type="Update">
+                [Apply](/namespaces/default/Deployment/nginx-deployment)
+            </div>
+        </div>
+        """,
+        ),
         ("No YAML content", "No YAML content"),
         ("", ""),
     ],
 )
-def test_convert_final_response(response_converter, state_content, expected_content):
+@pytest.mark.asyncio
+async def test_convert_final_response(
+    response_converter, state_content, expected_content
+):
     state = {"messages": [AIMessage(content=state_content, name=FINALIZER)]}
-    result = response_converter.convert_final_response(state)
+    result = await response_converter.convert_final_response(state)
     assert " ".join(result[MESSAGES][0].content.split()) == " ".join(
         expected_content.split()
     )

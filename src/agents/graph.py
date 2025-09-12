@@ -13,7 +13,7 @@ from langchain_core.messages import (
 )
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables import RunnableSequence
+from langchain_core.runnables import RunnableConfig, RunnableSequence
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.constants import END
 from langgraph.graph import StateGraph
@@ -27,9 +27,13 @@ from agents.common.constants import (
     FINALIZER,
     GATEKEEPER,
     INITIAL_SUMMARIZATION,
+    IS_FEEDBACK,
     MESSAGES,
     MESSAGES_SUMMARY,
     NEXT,
+    RESPONSE_HELLO,
+    RESPONSE_QUERY_OUTSIDE_DOMAIN,
+    RESPONSE_UNABLE_TO_PROCESS,
     SUBTASKS,
     SUMMARIZATION,
 )
@@ -37,16 +41,23 @@ from agents.common.data import Message
 from agents.common.response_converter import ResponseConverter
 from agents.common.state import (
     CompanionState,
+    FeedbackResponse,
     GatekeeperResponse,
+    GraphInput,
     Plan,
     SubTask,
     UserInput,
 )
-from agents.common.utils import filter_valid_messages, should_continue
+from agents.common.utils import (
+    filter_valid_messages,
+    get_resource_context_message,
+    should_continue,
+)
 from agents.k8s.agent import K8S_AGENT, KubernetesAgent
 from agents.kyma.agent import KYMA_AGENT, KymaAgent
 from agents.prompts import (
     COMMON_QUESTION_PROMPT,
+    FEEDBACK_PROMPT,
     GATEKEEPER_INSTRUCTIONS,
     GATEKEEPER_PROMPT,
 )
@@ -54,8 +65,11 @@ from agents.summarization.summarization import MessageSummarizer
 from agents.supervisor.agent import SUPERVISOR, SupervisorAgent
 from agents.supervisor.prompts import FINALIZER_PROMPT, FINALIZER_PROMPT_FOLLOW_UP
 from services.k8s import IK8sClient
+from services.langfuse import get_langfuse_metadata
+from services.usage import UsageTrackerCallback
 from utils.chain import ainvoke_chain
 from utils.logging import get_logger
+from utils.models.contants import GPT_41_NANO_MODEL_NAME
 from utils.models.factory import IModel
 from utils.settings import (
     MAIN_MODEL_MINI_NAME,
@@ -87,7 +101,28 @@ class CustomJSONEncoder(json.JSONEncoder):
             return o.__dict__
         elif isinstance(o, IK8sClient):
             return o.model_dump()
+        elif hasattr(o, "model_dump_json"):
+            return o.model_dump_json()
+        elif hasattr(o, "model_dump"):
+            return o.model_dump()
         return super().default(o)
+
+
+def create_chain(
+    main_sys_prompt: str,
+    followup_sys_prompt: str,
+    model: IModel,
+    schema: Any,
+) -> RunnableSequence:
+    """Create the a chain."""
+    prompt_template = ChatPromptTemplate.from_messages(
+        [
+            ("system", main_sys_prompt),
+            MessagesPlaceholder(variable_name="messages"),
+            ("system", followup_sys_prompt),
+        ]
+    )
+    return prompt_template | model.llm.with_structured_output(schema, method="function_calling")  # type: ignore
 
 
 class IGraph(Protocol):
@@ -152,9 +187,10 @@ class CompanionGraph:
 
         self.members = [self.kyma_agent.name, self.k8s_agent.name, COMMON]
         self._common_chain = self._create_common_chain(cast(IModel, main_model_mini))
-        self._gatekeeper_chain = self._create_gatekeeper_chain(
-            cast(IModel, main_model_mini)
+        self._feedback_chain = self._create_feedback_chain(
+            cast(IModel, models[GPT_41_NANO_MODEL_NAME])
         )
+        self._gatekeeper_chain = self._create_gatekeeper_chain(cast(IModel, main_model))
         self.graph = self._build_graph()
 
     @staticmethod
@@ -217,11 +253,33 @@ class CompanionGraph:
         )
         return prompt | model.llm.with_structured_output(GatekeeperResponse, method="function_calling")  # type: ignore
 
+    @staticmethod
+    def _create_feedback_chain(model: IModel) -> RunnableSequence:
+        """Feedback node chain to handle feedback queries."""
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", FEEDBACK_PROMPT),
+                MessagesPlaceholder(variable_name="messages"),
+            ]
+        )
+        return prompt | model.llm.with_structured_output(FeedbackResponse, method="function_calling")  # type: ignore
+
+    async def _invoke_feedback_node(self, state: CompanionState) -> FeedbackResponse:
+        """Invoke the Feedback node."""
+        response: Any = await ainvoke_chain(
+            self._feedback_chain,
+            {
+                "messages": [state.messages[-1]],  # last human message
+            },
+        )
+        return cast(FeedbackResponse, response)
+
     async def _invoke_gatekeeper_node(
         self, state: CompanionState
-    ) -> GatekeeperResponse | Any:
+    ) -> GatekeeperResponse:
         """Invoke the Gatekeeper node."""
-        response = await ainvoke_chain(
+        response: Any = await ainvoke_chain(
             self._gatekeeper_chain,
             {
                 "messages": filter_valid_messages(
@@ -229,30 +287,87 @@ class CompanionGraph:
                 ),
             },
         )
-        return response
+
+        # Cast the response to GatekeeperResponse.
+        gatekeeper_response = cast(GatekeeperResponse, response)
+
+        # set forward_query as false by default.
+        gatekeeper_response.forward_query = False
+
+        if (
+            gatekeeper_response.is_prompt_injection
+            or gatekeeper_response.is_security_threat
+        ):
+            logger.debug("Prompt injection or security issue detected")
+            gatekeeper_response.direct_response = RESPONSE_QUERY_OUTSIDE_DOMAIN
+        elif gatekeeper_response.category == "Greeting":
+            logger.debug("Gatekeeper responding to greeting")
+            gatekeeper_response.direct_response = RESPONSE_HELLO
+        elif (
+            gatekeeper_response.category in ["Programming", "About You"]
+            and gatekeeper_response.direct_response
+        ):
+            logger.debug(
+                "Gatekeeper responding with direct response for programming or about you category"
+            )
+        elif (
+            gatekeeper_response.category in ["Kyma", "Kubernetes"]
+            and gatekeeper_response.answer_from_history
+            and gatekeeper_response.is_user_query_in_past_tense
+        ):
+            logger.debug(
+                "Gatekeeper answering from conversation history for Kyma or Kubernetes"
+            )
+            gatekeeper_response.direct_response = (
+                gatekeeper_response.answer_from_history
+            )
+        elif gatekeeper_response.category in ["Kyma", "Kubernetes"]:
+            logger.debug("Gatekeeper forwarding the query")
+            gatekeeper_response.forward_query = True
+        else:
+            # If no category matched, return a default response.
+            logger.debug(
+                "Gatekeeper responding with default response because no category matched"
+            )
+            gatekeeper_response.direct_response = RESPONSE_QUERY_OUTSIDE_DOMAIN
+
+        # return the gatekeeper response.
+        return gatekeeper_response
 
     async def _gatekeeper_node(self, state: CompanionState) -> dict[str, Any]:
         """Gatekeeper node to handle general and queries that can answered from conversation history."""
 
         try:
-            response = await self._invoke_gatekeeper_node(state)
+            feedback_response = await self._invoke_feedback_node(state)
+        except Exception:
+            logger.exception("Error in feedback node")
+            feedback_response = FeedbackResponse(response=False)
 
-            if response.forward_query:
+        try:
+            gatekeeper_response = await self._invoke_gatekeeper_node(state)
+            if gatekeeper_response.forward_query:
                 logger.debug("Gatekeeper node forwarding the query")
                 return {
                     NEXT: SUPERVISOR,
                     SUBTASKS: [],
+                    IS_FEEDBACK: False,  # Quick FIx - Need to remove this hardcoded value
                 }
-            logger.debug("Gatekeeper node responding directly")
+
+            logger.debug("Gatekeeper node directly responding")
             return {
                 NEXT: END,
                 MESSAGES: [
                     AIMessage(
-                        content=response.direct_response,
+                        content=(
+                            gatekeeper_response.direct_response
+                            if gatekeeper_response.direct_response
+                            else RESPONSE_UNABLE_TO_PROCESS
+                        ),
                         name=GATEKEEPER,
                     )
                 ],
                 SUBTASKS: [],
+                IS_FEEDBACK: feedback_response.response,
             }
         except Exception:
             logger.exception("Error in gatekeeper node")
@@ -265,7 +380,99 @@ class CompanionGraph:
                     )
                 ],
                 SUBTASKS: [],
+                IS_FEEDBACK: feedback_response.response,
             }
+
+    def _get_members_str(self) -> str:
+        return ", ".join(self.members)
+
+    def _final_response_chain(self, state: CompanionState) -> RunnableSequence:
+        # last human message must be the query
+        last_human_message = next(
+            (msg for msg in reversed(state.messages) if isinstance(msg, HumanMessage)),
+        )
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", FINALIZER_PROMPT),
+                MessagesPlaceholder(variable_name="messages"),
+                ("system", FINALIZER_PROMPT_FOLLOW_UP),
+            ]
+        ).partial(members=self._get_members_str(), query=last_human_message.content)
+        return prompt | self.models[MAIN_MODEL_MINI_NAME].llm  # type: ignore
+
+    async def _generate_final_response(self, state: CompanionState) -> dict[str, Any]:
+        """Generate the final response."""
+
+        # If all required agents failed: tell user that we can't give them response due to agent failure
+        if state.subtasks and all(subtask.is_error() for subtask in state.subtasks):
+            return {
+                MESSAGES: [
+                    AIMessage(
+                        content="We're unable to provide a response at this time due to agent failure. "
+                        "Please try again or reach out to our support team for further assistance.",
+                        name=FINALIZER,
+                    )
+                ],
+                NEXT: END,
+            }
+
+        final_response_chain = self._final_response_chain(state)
+
+        final_response = await ainvoke_chain(
+            final_response_chain,
+            {"messages": filter_valid_messages(state.messages)},
+        )
+        logger.debug("Final response generated")
+        return {
+            MESSAGES: [
+                AIMessage(
+                    content=final_response.content,
+                    name=FINALIZER,
+                )
+            ],
+            NEXT: END,
+        }
+
+    async def _get_converted_final_response(
+        self, state: CompanionState
+    ) -> dict[str, Any]:
+        """Convert the generated final response"""
+        try:
+            final_response = await self._generate_final_response(state)
+            logger.debug("Response conversion node started")
+            return self.response_converter.convert_final_response(final_response)
+        except Exception:
+            logger.exception("Error in generating final response")
+            return {
+                MESSAGES: [
+                    AIMessage(
+                        content="Sorry, I encountered an error while processing the request. Try again later.",
+                        name=FINALIZER,
+                    )
+                ]
+            }
+
+    async def _supervisor_node(self, state: CompanionState) -> Any:
+        """Supervisor node to handle the conversation."""
+        response = await self.supervisor_agent.agent_node().ainvoke(state)
+
+        if response["next"] != FINALIZER:
+            # only send the subtask message to the dedicated agent
+            return Command(
+                goto=Send(
+                    response["next"],
+                    {
+                        "messages": [
+                            HumanMessage(content=response["messages"][-1].content)
+                        ],
+                        "k8s_client": state.k8s_client,
+                    },
+                ),
+            )
+
+        # finalizer needs all the messages to generate the final response
+        return Command(update={"messages": state.messages}, goto=FINALIZER)
 
     def _get_members_str(self) -> str:
         return ", ".join(self.members)
@@ -428,38 +635,41 @@ class CompanionGraph:
         """Stream the output to the caller asynchronously."""
         user_input = UserInput(**message.__dict__)
         messages: list[BaseMessage] = [HumanMessage(content=message.query)]
-        resource_context = user_input.get_resource_information()
-        if resource_context and len(resource_context) > 0:
+        resource_context_message = get_resource_context_message(user_input)
+        if resource_context_message:
             messages.insert(
                 0,
-                SystemMessage(
-                    content=f"The user query is related to: {resource_context}"
-                ),
+                resource_context_message,
             )
 
         x_cluster_url = k8s_client.get_api_server()
         cluster_id = x_cluster_url.split(".")[1]
 
-        async for chunk in self.graph.astream(
-            input={
-                "messages": messages,
-                "input": user_input,
-                "k8s_client": k8s_client,
-                "subtasks": [],
-                "error": None,
+        # define the graph input.
+        graph_input = GraphInput(
+            messages=messages,
+            input=user_input,
+            k8s_client=k8s_client,
+            subtasks=[],
+            error=None,
+        )
+
+        run_config = RunnableConfig(
+            configurable={
+                "thread_id": conversation_id,
             },
-            config={
-                "configurable": {
-                    "thread_id": conversation_id,
-                },
-                "callbacks": [
-                    self.handler,
-                ],
-                "tags": [
-                    cluster_id
-                ],  # cluster_id as a tag for traceability and rate limiting
-            },
-        ):
+            callbacks=[
+                self.handler,
+                UsageTrackerCallback(cluster_id, cast(IUsageMemory, self.memory)),
+            ],
+            tags=[cluster_id],
+            metadata=get_langfuse_metadata(
+                message.user_identifier or "unknown",
+                cluster_id,
+            ),
+        )
+
+        async for chunk in self.graph.astream(input=graph_input, config=run_config):
             chunk_json = json.dumps(chunk, cls=CustomJSONEncoder)
             if "__end__" not in chunk:
                 yield chunk_json

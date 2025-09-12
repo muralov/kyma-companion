@@ -2,8 +2,10 @@ import os
 
 import pytest
 from deepeval import assert_test
-from deepeval.metrics import ContextualPrecisionMetric, GEval
-from deepeval.test_case import LLMTestCase, LLMTestCaseParams
+from deepeval.metrics.contextual_precision.contextual_precision import (
+    ContextualPrecisionMetric,
+)
+from deepeval.test_case.llm_test_case import LLMTestCase
 from langchain_core.documents import Document
 
 from rag.reranker.reranker import (
@@ -16,35 +18,16 @@ from utils.settings import MAIN_MODEL_MINI_NAME
 
 
 @pytest.fixture
-def semantic_similarity_metric(evaluator_model):
-    return GEval(
-        name="Semantic Similarity",
-        evaluation_steps=[
-            "Evaluate whether two answers are semantically similar or convey the same meaning.",
-            "Lightly penalize omissions of detail, focusing on the main idea.",
-            "Vague language is permissible.",
-        ],
-        evaluation_params=[
-            LLMTestCaseParams.ACTUAL_OUTPUT,
-            LLMTestCaseParams.EXPECTED_OUTPUT,
-        ],
-        model=evaluator_model,
-        # TODO: Increase this threshold to at least 0.7, by improving the quality of the RAG system and
-        # its integration tests.
-        threshold=0.5,
-    )
+def contextual_precision(evaluator_model):
+    def callback(threshold: float):
+        contextual_precision = ContextualPrecisionMetric(
+            threshold=threshold,
+            model=evaluator_model,
+            include_reason=True,
+        )
+        return contextual_precision
 
-
-@pytest.fixture
-def evaluation_metrics(evaluator_model, semantic_similarity_metric):
-    contextual_precision = ContextualPrecisionMetric(
-        # TODO: Increase this threshold to at least 0.7, by improving the quality of the RAG system and
-        # its integration tests.
-        threshold=0.5,
-        model=evaluator_model,
-        include_reason=True,
-    )
-    return [contextual_precision, semantic_similarity_metric]
+    return callback
 
 
 @pytest.fixture(scope="session")
@@ -53,7 +36,7 @@ def llm_reranker(app_models):
 
 
 @pytest.mark.parametrize(
-    "name, given_docs_path, given_queries, given_limit, expected_docs_paths, enabled",
+    "name, given_docs_path, given_queries, given_limit, expected_docs_paths, threshold",
     [
         # Eventing
         (
@@ -64,7 +47,7 @@ def llm_reranker(app_models):
             [
                 "datasets/reranker/messages-pending-in-stream/03_published_events_are_pending_in_the_stream.md",
             ],
-            True,
+            0.5,
         ),
         (
             "what to do if event publish rate is too high for NATS?",
@@ -74,7 +57,7 @@ def llm_reranker(app_models):
             [
                 "datasets/reranker/event-publish-rate-too-high-nats/00_eventing_backend_stopped_receiving_events_due_to_full_storage.md",
             ],
-            True,
+            0.5,
         ),
         # Istio
         (
@@ -87,7 +70,7 @@ def llm_reranker(app_models):
             [
                 "datasets/reranker/enable-istio-sidecar-proxy-injection/00_enable_istio_sidecar_proxy_injection.md",
             ],
-            True,
+            0.5,
         ),
         (
             "why an Istio sidecar is not injected to a pod?",
@@ -99,7 +82,7 @@ def llm_reranker(app_models):
             [
                 "datasets/reranker/istio-sidecar-not-injected-to-pod/01_istio_sidecar_proxy_injection_issues_cause.md",
             ],
-            True,
+            0.5,
         ),
         (
             "Why do I get a 'Connection reset by peer' error?",
@@ -111,7 +94,7 @@ def llm_reranker(app_models):
             [
                 "datasets/reranker/connection-reset-by-peer-error/05_connection_refused_errors.md",
             ],
-            True,
+            0.5,
         ),
         (
             "function pod have no sidecar proxy",
@@ -123,7 +106,7 @@ def llm_reranker(app_models):
             [
                 "datasets/reranker/function-pod-have-no-sidecar-proxy/02_istio_sidecar_proxy_injection_issues_solution.md",
             ],
-            True,
+            0.5,
         ),
         # Serverless
         (
@@ -136,7 +119,7 @@ def llm_reranker(app_models):
             [
                 "datasets/reranker/function-build-failing/03_failure_to_build_functions.md",
             ],
-            True,
+            0.5,
         ),
         (
             "How to expose a Function Using the APIRule Custom Resource?",
@@ -147,8 +130,9 @@ def llm_reranker(app_models):
             4,
             [
                 "datasets/reranker/expose-function-using-apirule/01_expose_a_function_using_the_apirule_custom_resource_steps.md",
+                "datasets/reranker/expose-function-using-apirule/02_expose_a_function_using_the_apirule_custom_resource.md",
             ],
-            True,
+            0.5,
         ),
         (
             "How to create a Function?",
@@ -160,7 +144,7 @@ def llm_reranker(app_models):
             [
                 "datasets/reranker/how-to-create-function/01_create_and_modify_an_inline_function_steps.md",
             ],
-            True,
+            0.5,
         ),
         (
             "want to create custom tracing spans for a function",
@@ -172,7 +156,7 @@ def llm_reranker(app_models):
             [
                 "datasets/reranker/create-custom-tracing-spans-for-function/00_customize_function_traces.md",
             ],
-            True,
+            0.5,
         ),
         (
             "adding a new env var to a function",
@@ -184,7 +168,7 @@ def llm_reranker(app_models):
             [
                 "datasets/reranker/add-env-var-to-function/01_inject_environment_variables.md",
             ],
-            True,
+            0.5,
         ),
         (
             "Serverless function pod has lots of restarts",
@@ -196,7 +180,7 @@ def llm_reranker(app_models):
             [
                 "datasets/reranker/serverless-function-pod-restarts/02_serverless_periodically_restarting.md",
             ],
-            True,
+            0.5,
         ),
         # Telemetry
         (
@@ -209,7 +193,7 @@ def llm_reranker(app_models):
             [
                 "datasets/reranker/show-how-to-create-trace-pipeline/03_traces_setting_up_a_tracepipeline_1_create_a_tracepipeline.md",
             ],
-            True,
+            0.5,
         ),
         (
             "what are the prerequisites for Kyma application to enable logging?",
@@ -221,20 +205,19 @@ def llm_reranker(app_models):
             [
                 "datasets/reranker/prerequisites-to-enable-logging/03_application_logs_prerequisites.md",
             ],
-            True,
+            0.5,
         ),
         (
-            "why there is no logs in the backend?",
+            "why are there no logs in the backend?",
             "datasets/reranker/no-logs-in-backend",
             [
-                "why there is no logs in the backend?",
+                "why are there no logs in the backend?",
             ],
             4,
             [
                 "datasets/reranker/no-logs-in-backend/00_application_logs_troubleshooting.md",
-                "datasets/reranker/no-logs-in-backend/01_application_logs_operations.md",
             ],
-            True,
+            0.5,
         ),
     ],
 )
@@ -246,8 +229,8 @@ async def test_chain_ainvoke(
     given_limit,
     expected_docs_paths,
     llm_reranker,
-    enabled,
-    evaluation_metrics,
+    threshold,
+    contextual_precision,
 ):
     """
     This test ensures that the reranker chain (prompt and output) is working as expected.
@@ -257,12 +240,8 @@ async def test_chain_ainvoke(
     :param given_limit: limit of documents to return.
     :param expected_docs_paths: list of paths to expected documents.
     :param llm_reranker: LLMReranker instance.
-    :param evaluation_metrics: list of metrics.
+    :param contextual_precision: contextual_precision metric.
     """
-
-    if not enabled:
-        pytest.skip("Test not enabled")
-        return None
 
     # Prepare
     base_path = os.path.dirname(os.path.abspath(__file__))
@@ -293,8 +272,18 @@ async def test_chain_ainvoke(
         retrieval_context=tc_retrieval_context,
         expected_output=tc_expected_output,
     )
+
+    # Report the test summary for debugging purposes.
     report_test_summary(given_queries, given_docs, actual_docs, expected_docs)
-    assert_test(test_case, evaluation_metrics)
+
+    actual_docs_titles = get_docs_titles(actual_docs)
+    expected_docs_titles = get_docs_titles(expected_docs)
+    # Assert that the expected documents are in the actual list of documents.
+    assert set(expected_docs_titles).issubset(
+        set(actual_docs_titles)
+    ), "Expected documents not found in actual output"
+    # Assert that the contextual precision is above the threshold.
+    assert_test(test_case, [contextual_precision(threshold)])
 
 
 def load_docs_in_path(path: str, extension: str, sort: bool = True) -> list[Document]:
@@ -340,9 +329,13 @@ def report_test_summary(given_queries, given_docs, actual_docs, expected_docs):
 
 
 def report_queries(prefix, queries):
-    print(f"{prefix} ({len(queries):02d}):\n- {"\n- ".join(queries)}\n")
+    print(f"{prefix} ({len(queries):02d}):\n- {'\n- '.join(queries)}\n")
+
+
+def get_docs_titles(docs):
+    return [doc.page_content.split("\n")[0].strip() for doc in docs]
 
 
 def report_docs(prefix, docs):
-    docs_list = [doc.page_content.split("\n")[0].strip() for doc in docs]
-    print(f"{prefix} ({len(docs_list):02d}):\n- {"\n- ".join(docs_list)}\n")
+    docs_list = get_docs_titles(docs)
+    print(f"{prefix} ({len(docs_list):02d}):\n- {'\n- '.join(docs_list)}\n")

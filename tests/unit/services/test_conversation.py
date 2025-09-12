@@ -1,8 +1,10 @@
+import json
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from langchain_core.messages import AIMessage
 
+from agents.common.constants import ERROR, ERROR_RESPONSE
 from agents.common.data import Message
 from services.conversation import TOKEN_LIMIT, ConversationService
 from services.usage import UsageExceedReport
@@ -67,7 +69,8 @@ class TestConversation:
         mock_config.sanitization_config = Mock()
         return mock_config
 
-    def test_new_conversation(
+    @pytest.mark.asyncio
+    async def test_new_conversation(
         self,
         mock_model_factory,
         mock_companion_graph,
@@ -76,7 +79,9 @@ class TestConversation:
     ) -> None:
         # Given:
         mock_handler = Mock()
-        mock_handler.fetch_relevant_data_from_k8s_cluster = Mock(return_value=POD_YAML)
+        mock_handler.fetch_relevant_data_from_k8s_cluster = AsyncMock(
+            return_value=POD_YAML
+        )
         mock_handler.apply_token_limit = Mock(return_value=POD_YAML)
         mock_handler.generate_questions = Mock(return_value=QUESTIONS)
         conversation_service = ConversationService(
@@ -87,7 +92,7 @@ class TestConversation:
         mock_k8s_client = Mock()
 
         # When:
-        result = conversation_service.new_conversation(
+        result = await conversation_service.new_conversation(
             k8s_client=mock_k8s_client, message=TEST_MESSAGE
         )
 
@@ -161,6 +166,30 @@ class TestConversation:
             )
         ]
         assert result == [b"chunk1", b"chunk2", b"chunk3"]
+
+    @pytest.mark.asyncio
+    async def test_handle_request_exception(
+        self,
+        mock_model_factory,
+        mock_redis_saver,
+        mock_companion_graph,
+        mock_config,
+    ):
+        mock_k8s_client = Mock()
+        mock_companion_graph.astream.side_effect = Exception("stream failure")
+
+        messaging_service = ConversationService(config=mock_config)
+        messaging_service._companion_graph = mock_companion_graph
+
+        result = [
+            chunk
+            async for chunk in messaging_service.handle_request(
+                CONVERSATION_ID, TEST_MESSAGE, mock_k8s_client
+            )
+        ]
+
+        error_response = json.dumps({ERROR: {ERROR: ERROR_RESPONSE}}).encode()
+        assert result == [error_response]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

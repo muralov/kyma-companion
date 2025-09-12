@@ -18,6 +18,7 @@ from agents.common.constants import (
     PLANNER,
 )
 from agents.common.exceptions import SubtasksMissingError
+from agents.common.prompts import JOULE_CONTEXT_INFORMATION
 from agents.common.response_converter import IResponseConverter
 from agents.common.state import Plan, Route
 from agents.common.utils import (
@@ -94,6 +95,7 @@ class SupervisorAgent:
         self.members = members
 
         self._router_chain = self._create_router_chain(self.model)
+        self.parser = self._route_create_parser()
         self._planner_chain = self._create_planner_chain(self.model)
         self._graph = self._build_graph()
 
@@ -213,6 +215,83 @@ class SupervisorAgent:
                 next=END,
                 error="Unexpected error while processing the request. Please try again later.",
             )
+
+    def _final_response_chain(self, state: SupervisorState) -> RunnableSequence:
+        # last human message must be the query
+        if not state.input or not state.input.query:
+            raise ValueError("Input query is missing in the finalizer state.")
+        last_human_message = HumanMessage(content=state.input.query)
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", FINALIZER_PROMPT),
+                MessagesPlaceholder(variable_name="messages"),
+                ("system", FINALIZER_PROMPT_FOLLOW_UP),
+            ]
+        ).partial(
+            members=self._get_members_str(),
+            query=last_human_message.content,
+            joule_context_info=JOULE_CONTEXT_INFORMATION,
+        )
+        return prompt | self.model.llm  # type: ignore
+
+    async def _generate_final_response(self, state: SupervisorState) -> dict[str, Any]:
+        """Generate the final response."""
+
+        # If all required agents failed: tell user that we can't give them response due to agent failure
+        if state.subtasks and all(subtask.is_error() for subtask in state.subtasks):
+            return {
+                MESSAGES: [
+                    AIMessage(
+                        content="We're unable to provide a response at this time due to agent failure. "
+                        "Please try again or reach out to our support team for further assistance.",
+                        name=FINALIZER,
+                    )
+                ],
+                NEXT: END,
+            }
+
+        final_response_chain = self._final_response_chain(state)
+
+        final_response = await ainvoke_chain(
+            final_response_chain,
+            {"messages": filter_valid_messages(state.messages)},
+        )
+        logger.debug("Final response generated")
+        return {
+            MESSAGES: [
+                AIMessage(
+                    content=final_response.content,
+                    name=FINALIZER,
+                )
+            ],
+            NEXT: END,
+        }
+
+    async def _get_converted_final_response(
+        self, state: SupervisorState
+    ) -> dict[str, Any]:
+        """Convert the generated final response"""
+        try:
+            final_response = await self._generate_final_response(state)
+            logger.debug("Response conversion node started")
+            if state.k8s_client is None:
+                raise ValueError(
+                    "K8s client is not initialized in the SupervisorState."
+                )
+            return await ResponseConverter(state.k8s_client).convert_final_response(
+                final_response
+            )
+        except Exception:
+            logger.exception("Error in generating final response")
+            return {
+                MESSAGES: [
+                    AIMessage(
+                        content="Sorry, I encountered an error while processing the request. Try again later.",
+                        name=FINALIZER,
+                    )
+                ]
+            }
 
     def _build_graph(self) -> CompiledStateGraph:
         # Define a new graph.

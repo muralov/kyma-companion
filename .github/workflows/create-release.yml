@@ -27,18 +27,21 @@ on:
   workflow_dispatch:
     inputs:
       name: # release tag
-        description: 'Release tag (i.e. x.y.z). Make sure that branch with name release-x.y exists.'
+        description: "Release tag (i.e. x.y.z). Make sure that branch with name release-x.y exists."
         default: ""
         required: true
       sec-scanners-config:
         type: boolean
-        description: 'Create PR with sec-scanners-config bump'
+        description: "Create PR with sec-scanners-config bump"
         default: true
+
+permissions: write-all
 
 # global env variables.
 env:
   REPOSITORY_FULL_NAME: "${{ github.repository }}" # <owner>/<repository-name>.
   IMAGE_NAME: "europe-docker.pkg.dev/kyma-project/prod/kyma-companion" # without tag.
+  IMAGE_NAME_INDEXER: "europe-docker.pkg.dev/kyma-project/prod/kyma-companion-indexer" # without tag.
   RELEASE_TAG: "${{ inputs.name }}"
 
 jobs:
@@ -115,10 +118,64 @@ jobs:
       - name: Create config.json
         run: |
           mkdir -p config
-          echo '{"mock-key": "mock-value"}' > config/config.json 
+          echo '{"mock-key": "mock-value"}' > config/config.json
 
       - name: Run tests
         run: poetry run poe test
+
+  run-unit-tests-indexer:
+    ## **IMPORTANT**: If any changes are made to how to run the unit tests
+    ## in the release-workflow, make sure to update the steps
+    ## in the unit-test.yaml workflow as well.
+    name: Run indexer unit tests
+    needs: validate-input-params
+    runs-on: ubuntu-latest
+    permissions: read-all
+    env:
+      RELEASE_BRANCH: ${{ needs.validate-input-params.outputs.release_branch }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with: # checkout the release branch.
+          ref: ${{ needs.validate-input-params.outputs.release_branch }}
+
+      - name: Check if the checked out branch is the release branch.
+        run: |
+          git branch --show-current
+          git branch --show-current | grep -q ${RELEASE_BRANCH}
+
+      - name: Extract Python version
+        id: python-version
+        run: ./scripts/shell/extract-python-version.sh
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Poetry
+        run: |
+          curl -sSL https://install.python-poetry.org | python3 -
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        working-directory: ./doc_indexer
+        run: poetry install --with test
+
+      - name: Create config.json
+        run: |
+          mkdir -p config
+          echo '{"mock-key": "mock-value"}' > config/config.json
+
+      - name: Run tests
+        working-directory: ./doc_indexer
+        env:
+          LOG_LEVEL: "DEBUG"
+          # Kyma docs path.
+          DOCS_SOURCES_FILE_PATH: "./docs_sources.json"
+          DOCS_PATH: "/test-data"
+          DOCS_TABLE_NAME: "kc_pr_release_${{ inputs.name }}"
+        run: poetry run poe test-unit
 
   run-integration-tests:
     ## **IMPORTANT**: If any changes are made to how to run the integration tests
@@ -165,9 +222,98 @@ jobs:
           echo "${{ secrets.INTEGRATION_TEST_CONFIG }}" | base64 --decode | jq > $GITHUB_WORKSPACE/config/config.json
           poetry run poe test-integration
 
+  run-integration-tests-indexer:
+    ## **IMPORTANT**: If any changes are made to how to run the integration tests
+    ## in the release-workflow, make sure to update
+    ## in the run-integration-test.yaml workflow as well.
+    name: Run indexer integration tests
+    needs: validate-input-params
+    runs-on: ubuntu-latest
+    permissions: read-all
+    env:
+      RELEASE_BRANCH: ${{ needs.validate-input-params.outputs.release_branch }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with: # checkout the release branch.
+          ref: ${{ needs.validate-input-params.outputs.release_branch }}
+
+      - name: Check if the checked out branch is the release branch.
+        run: |
+          git branch --show-current
+          git branch --show-current | grep -q ${RELEASE_BRANCH}
+
+      - name: Extract Python version
+        id: python-version
+        run: ./scripts/shell/extract-python-version.sh
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Poetry
+        run: |
+          curl -sSL https://install.python-poetry.org | python3 -
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        working-directory: ./doc_indexer
+        run: poetry install --with test
+
+      - name: Run integration tests
+        working-directory: ./doc_indexer
+        env:
+          LOG_LEVEL: "DEBUG"
+          # Kyma docs path.
+          DOCS_SOURCES_FILE_PATH: "./docs_sources.json"
+          DOCS_PATH: "/test-data"
+          DOCS_TABLE_NAME: "kc_pr_release_${{ inputs.name }}"
+        run: |
+          export CONFIG_PATH=$GITHUB_WORKSPACE/config/config.json
+          echo "${{ secrets.DOC_INDEXER_TESTS_CONFIG }}" | base64 --decode | jq > $CONFIG_PATH
+          poetry run poe test-integration
+
+  get-image-sha:
+    name: Get Release branch head commit SHA
+    runs-on: ubuntu-latest
+    needs: validate-input-params
+    env:
+      RELEASE_BRANCH: ${{ needs.validate-input-params.outputs.release_branch }}
+    outputs:
+      sha: ${{ steps.get_sha.outputs.sha }}
+    steps:
+      - name: Checkout target branch from another repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPOSITORY_FULL_NAME }}
+          ref: ${{ env.RELEASE_BRANCH }}
+
+      - name: Get the last commit's SHA of the release branch
+        id: get_sha
+        run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+  run-evaluation-tests:
+    name: Run evaluation tests
+    uses: kyma-project/kyma-companion/.github/workflows/evaluation-test-reusable.yaml@main
+    needs: get-image-sha
+    secrets: inherit
+    with:
+      IMAGE_NAME: europe-docker.pkg.dev/kyma-project/prod/kyma-companion:${{ needs.get-image-sha.outputs.sha }}
+      TEST_REPO_FULLNAME: ${{ github.repository }}
+      TEST_REF: ${{ needs.get-image-sha.outputs.sha }}
+
   bump-sec-scanners-release-branch:
     name: Bump image in sec-scanners-config on release branch
-    needs: [ validate-input-params, run-unit-tests, run-integration-tests]
+    needs:
+      [
+        validate-input-params,
+        run-unit-tests,
+        run-integration-tests,
+        run-evaluation-tests,
+        run-integration-tests-indexer,
+        run-unit-tests-indexer
+      ]
     runs-on: ubuntu-latest
     env:
       RELEASE_BRANCH: ${{ needs.validate-input-params.outputs.release_branch }}
@@ -221,7 +367,7 @@ jobs:
 
   create-git-tag:
     name: Create git tag for release
-    needs: [ validate-input-params, bump-sec-scanners-release-branch]
+    needs: [validate-input-params, bump-sec-scanners-release-branch]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GIT_BOT_TOKEN }} # creating git tag using bot token because GITHUB_TOKEN would not trigger build workflow (https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow).
@@ -242,11 +388,10 @@ jobs:
       - name: Create git tag
         run: |
           ./scripts/shell/create_git_tag.sh "${RELEASE_TAG}"
-          
 
   wait-for-build:
     name: Wait for image build job
-    needs: [ validate-input-params, create-git-tag ]
+    needs: [validate-input-params, create-git-tag]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -257,19 +402,29 @@ jobs:
       - name: Setup python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-          cache: 'pip'
+          python-version: "3.10"
+          cache: "pip"
 
       - name: Install requirements
         run: |
           pip install -r ./scripts/python/wait-for-commit-check/requirements.txt
 
-      - name: wait for build
+      - name: wait for build companion
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GIT_REF: ${{ inputs.name }}
           # The re-useable image-builder workflow from neighbors appends the "Build image" suffix to the check run name.
           GIT_CHECK_RUN_NAME: "build-${{ inputs.name }} / Build image"
+          INTERVAL: 60
+          TIMEOUT: 900
+        run: |
+          python ./scripts/python/wait-for-commit-check/run.py
+      - name: wait for build indexer
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GIT_REF: ${{ inputs.name }}
+          # The re-useable image-builder workflow from neighbors appends the "Build image" suffix to the check run name.
+          GIT_CHECK_RUN_NAME: "build-indexer-${{ inputs.name }} / Build image"
           INTERVAL: 60
           TIMEOUT: 900
         run: |
@@ -301,7 +456,7 @@ jobs:
 
   bump-sec-scanners-main-branch:
     name: Bump image in sec-scanners-config
-    needs: [ validate-input-params, wait-for-build, create-draft ]
+    needs: [validate-input-params, wait-for-build, create-draft]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -347,7 +502,7 @@ jobs:
 
   check-prerequisites:
     name: Check release pre-requisites
-    needs: [ create-draft, wait-for-build, bump-sec-scanners-main-branch ]
+    needs: [create-draft, wait-for-build, bump-sec-scanners-main-branch]
     runs-on: ubuntu-latest
 
     steps:
@@ -356,5 +511,11 @@ jobs:
         with:
           ref: main
 
-      - name: Check pre-requisites before publishing release
+      - name: Check pre-requisites before publishing release for Companion
         run: ./scripts/shell/check_publish_release_prerequisites.sh "${RELEASE_TAG}"
+
+      - name: Check pre-requisites before publishing release for Indexer
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME_INDEXER }}
+        run: ./scripts/shell/check_publish_release_prerequisites.sh "${RELEASE_TAG}"
+

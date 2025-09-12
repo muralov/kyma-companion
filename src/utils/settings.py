@@ -2,9 +2,21 @@ import json
 import logging
 import os
 import sys
+from enum import StrEnum
 from pathlib import Path
 
 from decouple import config
+
+
+class LangfuseMaskingModes(StrEnum):
+    """Enumeration for Langfuse masking modes."""
+
+    DISABLED = "DISABLED"  # No masking, return data as is.
+    PARTIAL = "PARTIAL"  # Pushed only the user input and resource information. Everything else is masked.
+    FILTERED = (
+        "FILTERED"  # Tool messages are redacted, and all other messages are sanitized.
+    )
+    REDACTED = "REDACTED"  # Everything is redacted.
 
 
 def load_env_from_json() -> None:
@@ -37,7 +49,11 @@ def load_env_from_json() -> None:
 
             # Set environment variables for all keys except "models"
             for key, value in config_file.items():
-                if key != "models":  # Skip models
+                if key == "models":  # Skip models
+                    continue
+                elif isinstance(value, list | dict):
+                    os.environ[key] = json.dumps(value)
+                else:
                     os.environ[key] = str(value)
     except json.JSONDecodeError as e:
         logging.error(f"Invalid JSON format in config file {config_path}: {e}")
@@ -62,7 +78,7 @@ DEEPEVAL_TESTCASE_VERBOSE = config("DEEPEVAL_TESTCASE_VERBOSE", default="False")
 
 # Initialization of the main chat LLM models and main embedding model.
 MAIN_MODEL_NAME = config("MAIN_MODEL_NAME", default="gpt-4.1")
-MAIN_MODEL_MINI_NAME = config("MAIN_MODEL_MINI_NAME", default="gpt-4.1-mini")
+MAIN_MODEL_MINI_NAME = config("MAIN_MODEL_MINI_NAME", default="gpt-4o-mini")
 MAIN_EMBEDDING_MODEL_NAME = config(
     "MAIN_EMBEDDING_MODEL_NAME", default="text-embedding-3-large"
 )
@@ -87,7 +103,9 @@ LANGFUSE_SECRET_KEY = config("LANGFUSE_SECRET_KEY", default="dummy")
 LANGFUSE_PUBLIC_KEY = config("LANGFUSE_PUBLIC_KEY", default="dummy")
 LANGFUSE_HOST = config("LANGFUSE_HOST", default="localhost")
 LANGFUSE_ENABLED = config("LANGFUSE_ENABLED", default="False")
-LANGFUSE_DEBUG_MODE = config("LANGFUSE_DEBUG_MODE", default="False")
+LANGFUSE_MASKING_MODE = config(
+    "LANGFUSE_MASKING_MODE", default="REDACTED", cast=LangfuseMaskingModes
+)
 
 # Summarization
 SUMMARIZATION_TOKEN_UPPER_LIMIT = config(
@@ -95,6 +113,15 @@ SUMMARIZATION_TOKEN_UPPER_LIMIT = config(
 )
 SUMMARIZATION_TOKEN_LOWER_LIMIT = config(
     "SUMMARIZATION_TOKEN_LOWER_LIMIT", default=2000, cast=int
+)
+
+MAX_TOKEN_LIMIT_INPUT_QUERY = config(
+    "MAX_TOKEN_LIMIT_INPUT_QUERY", default=8000, cast=int
+)
+
+# RAG
+RAG_RELEVANCY_SCORE_THRESHOLD = config(
+    "RAG_RELEVANCY_SCORE_THRESHOLD", default=0.5, cast=float
 )
 
 DATABASE_URL = config("DATABASE_URL", None)
@@ -108,6 +135,19 @@ TOKEN_USAGE_RESET_INTERVAL = config(
     "TOKEN_USAGE_RESET_INTERVAL", 86400, cast=int
 )  # 24 hours
 
+
+K8S_API_PAGINATION_LIMIT = config("K8S_API_PAGINATION_LIMIT", 40, cast=int)
+
+K8S_API_PAGINATION_MAX_PAGE = config("K8S_API_PAGINATION_MAX_PAGE", 1, cast=int)
+
+TOTAL_CHUNKS_LIMIT = config(
+    "TOTAL_CHUNKS_LIMIT", 2, cast=int
+)  # Limit the number of allowed chunking of tool response
+
+TOOL_RESPONSE_TOKEN_COUNT_LIMIT = config(
+    "TOOL_RESPONSE_TOKEN_COUNT_LIMIT", 10000, cast=int
+)
+
 REDIS_SSL_ENABLED = config("REDIS_SSL_ENABLED", default=False)
 K8S_API_RESOURCES_JSON_FILE = config(
     "K8S_API_RESOURCES_JSON_FILE",
@@ -117,6 +157,9 @@ K8S_RESOURCE_RELATIONS_JSON_FILE = config(
     "K8S_RESOURCE_RELATIONS_JSON_FILE",
     default=f"{ Path(__file__).parent.parent.parent }/config/resource_relations.json",
 )
+
+# set ALLOWED_K8S_DOMAINS to [] if all domains are allowed.
+ALLOWED_K8S_DOMAINS = config("ALLOWED_K8S_DOMAINS", default="[]", cast=json.loads)
 
 if "pytest" in sys.modules:
     TEST_CLUSTER_URL = config("TEST_CLUSTER_URL", default="")

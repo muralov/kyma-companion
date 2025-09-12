@@ -22,6 +22,7 @@ def test_process_response_gatekeeper_forwarded_to_supervisor():
 
     result = process_response(data, GATEKEEPER)
 
+    assert result is not None
     assert result["agent"] == GATEKEEPER
     assert result["error"] is None
     assert result["answer"]["content"] == ""
@@ -124,6 +125,38 @@ def test_process_response_gatekeeper_forwarded_to_supervisor():
             b'asks": []}, "error": "Error occurred"}}',
         ),
         (
+            # Summarization agent with error - special error response
+            # input
+            b'{"Summarization": {"error": "Summarization failed", "messages": []}}',
+            # expected
+            b'{"event": "agent_action", "data": {"agent": null, "error": "Summarization f'
+            b'ailed", "answer": {"content": "", "tasks": [], "next": "__end__"}}}',
+        ),
+        (
+            # InitialSummarization agent with error - special error response
+            # input
+            b'{"InitialSummarization": {"error": "Initial summarization failed", "messages": []}}',
+            # expected
+            b'{"event": "agent_action", "data": {"agent": null, "error": "Initial summar'
+            b'ization failed", "answer": {"content": "", "tasks": [], "next": "__end__"}}}',
+        ),
+        (
+            # KymaAgent with error and empty subtasks
+            # input
+            b'{"KymaAgent": {"error": "Kyma service unavailable", "messages": [], "subtasks": []}}',
+            # expected
+            b'{"event": "agent_action", "data": {"agent": "KymaAgent", "answer": {"tasks"'
+            b': []}, "error": "Kyma service unavailable"}}',
+        ),
+        (
+            # Regular agent with error and some content
+            # input
+            b'{"Common": {"error": "Network timeout", "messages": [{"content": "Partial response", "name": "Common"}], "subtasks": []}}',
+            # expected
+            b'{"event": "agent_action", "data": {"agent": "Common", "answer": {"content":'
+            b' "Partial response", "tasks": []}, "error": "Network timeout"}}',
+        ),
+        (
             # Error response for invalid json
             # input
             b'{"InvalidJSON"',
@@ -135,6 +168,14 @@ def test_process_response_gatekeeper_forwarded_to_supervisor():
             b"{}",
             # expected
             b'{"event": "unknown", "data": {"error": "No agent found"}}',
+        ),
+        (
+            b'{"error": {"error":"We encountered an error while processing your request. Please try again shortly. Thank you for your patience!"}}',
+            b'{"event": "unknown", "data": {"agent": null, "error": "We encountered an err'
+            b"or while processing your request. Please try again shortly. Thank you for yo"
+            b'ur patience!", "answer": {"content": "We encountered an error while processi'
+            b'ng your request. Please try again shortly. Thank you for your patience!", "t'
+            b'asks": [], "next": "__end__"}}}',
         ),
     ],
 )
