@@ -1,12 +1,15 @@
 from typing import Annotated
 
-from langchain_core.tools import tool
+import httpx
+from fastmcp.client import StreamableHttpTransport
+from httpx import Client
+from langchain_core.tools import tool, BaseTool
+from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.prebuilt import InjectedState
 from pydantic import BaseModel, Field
 from pydantic.config import ConfigDict
 
 from services.k8s import IK8sClient
-
 
 class KymaQueryToolArgs(BaseModel):
     """Arguments for the kyma_query_tool."""
@@ -80,3 +83,20 @@ def fetch_kyma_resource_version(
             f"failed executing fetch_kyma_resource_version with resource_kind: {resource_kind},"
             f" raised the following error: {e}"
         ) from e
+
+async def create_mcp_tools() -> list[BaseTool]:
+    k8s_client = MultiServerMCPClient(
+        {
+            "kubernetes": {
+                "url": "http://localhost:8000/mcp",
+                "headers": {
+                    "x_cluster_url": x_cluster_url,
+                    "x_k8s_authorization": x_k8s_authorization,
+                    "x_cluster_certificate_authority_data": x_cluster_certificate_authority_data,
+                },
+                "transport": "streamable_http",
+            }
+        }
+    )
+    tools = await k8s_client.get_tools()
+    return tools

@@ -2,6 +2,7 @@ import json
 from collections.abc import AsyncGenerator
 from typing import Protocol, cast
 
+from langchain_mcp_adapters.client import MultiServerMCPClient
 from langfuse.callback import CallbackHandler
 
 from agents.common.constants import ERROR, ERROR_RESPONSE
@@ -47,7 +48,7 @@ class IService(Protocol):
         ...
 
     def handle_request(
-        self, conversation_id: str, message: Message, k8s_client: IK8sClient
+        self, conversation_id: str, message: Message, k8s_client: IK8sClient, k8s_mcp_client
     ) -> AsyncGenerator[bytes, None]:
         """Handle a request for a conversation"""
         ...
@@ -150,12 +151,12 @@ class ConversationService(metaclass=SingletonMeta):
         return self._followup_questions_handler.generate_questions(messages=messages)
 
     async def handle_request(
-        self, conversation_id: str, message: Message, k8s_client: IK8sClient
+        self, conversation_id: str, message: Message, k8s_client: IK8sClient, k8s_mcp_client: MultiServerMCPClient
     ) -> AsyncGenerator[bytes, None]:
         """Handle a request"""
         try:
             async for chunk in self._companion_graph.astream(
-                conversation_id, message, k8s_client
+                conversation_id, message, k8s_client, k8s_mcp_client
             ):
                 yield chunk.encode()
         except Exception:

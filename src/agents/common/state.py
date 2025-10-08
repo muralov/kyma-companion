@@ -263,6 +263,7 @@ class GraphInput(BaseModel):
     messages: list[BaseMessage]
     input: UserInput
     k8s_client: Annotated[Any, Field(default=None, exclude=True)]
+    k8s_mcp_client: Annotated[Any, Field(default=None, exclude=True)]
     subtasks: list[SubTask] = []
     error: str | None = None
 
@@ -294,6 +295,7 @@ class CompanionState(BaseModel):
     subtasks: list[SubTask] | None = []
     error: str | None = None
     k8s_client: Annotated[Any, Field(default=None, exclude=True)]
+    k8s_mcp_client: Annotated[Any, Field(default=None, exclude=True)]
     is_feedback: bool = Field(default=False)
 
     # Model config for pydantic.
@@ -326,6 +328,7 @@ class BaseAgentState(BaseModel):
     messages: Annotated[Sequence[BaseMessage], add_messages]
     subtasks: list[SubTask] | None = []
     k8s_client: Annotated[Any, Field(default=None, exclude=True)]
+    k8s_mcp_client: Annotated[Any, Field(default=None, exclude=True)]
 
     # Subgraph private fields
     agent_messages: Annotated[Sequence[BaseMessage], add_messages]

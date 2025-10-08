@@ -1,3 +1,4 @@
+import asyncio
 from typing import cast
 
 from langchain_core.embeddings import Embeddings
@@ -11,7 +12,7 @@ from agents.common.constants import (
 )
 from agents.kyma.prompts import KYMA_AGENT_INSTRUCTIONS, KYMA_AGENT_PROMPT
 from agents.kyma.state import KymaAgentState
-from agents.kyma.tools.query import fetch_kyma_resource_version, kyma_query_tool
+from agents.kyma.tools.query import fetch_kyma_resource_version, kyma_query_tool, create_mcp_tools
 from agents.kyma.tools.search import SearchKymaDocTool
 from utils.models.factory import IModel
 from utils.settings import GRAPH_STEP_TIMEOUT_SECONDS, MAIN_MODEL_NAME
@@ -24,13 +25,16 @@ class KymaAgent(BaseAgent):
     Kyma cluster resources. It uses GPT-4 for processing queries and generating responses.
     """
 
+    tools: list[BaseTool]
+
     def __init__(self, models: dict[str, IModel | Embeddings]) -> None:
         """Initialize the KymaAgent with necessary tools and models."""
-        tools: list[BaseTool] = [
+        mcp_tools = asyncio.run(create_mcp_tools())
+
+        self.tools = [
             fetch_kyma_resource_version,
-            kyma_query_tool,
             SearchKymaDocTool(models),
-        ]
+        ] + mcp_tools
         agent_prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", KYMA_AGENT_PROMPT),
@@ -45,7 +49,7 @@ class KymaAgent(BaseAgent):
         super().__init__(
             name=KYMA_AGENT,
             model=cast(IModel, models[MAIN_MODEL_NAME]),
-            tools=tools,
+            tools=self.tools,
             agent_prompt=agent_prompt,
             state_class=KymaAgentState,
         )

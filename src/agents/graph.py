@@ -14,6 +14,7 @@ from langchain_core.messages import (
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig, RunnableSequence
+from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.constants import END
 from langgraph.graph import StateGraph
@@ -75,6 +76,13 @@ from utils.settings import (
     SUMMARIZATION_TOKEN_UPPER_LIMIT,
 )
 
+import mlflow
+
+mlflow.langchain.autolog()
+mlflow.set_experiment(experiment_id=2643571428613970)
+mlflow.set_tracking_uri("databricks")
+
+
 logger = get_logger(__name__)
 
 
@@ -93,7 +101,8 @@ class CustomJSONEncoder(json.JSONEncoder):
             | HumanMessage
             | SystemMessage
             | ToolMessage
-            | SubTask,
+            | SubTask
+            | MultiServerMCPClient,
         ):
             return o.__dict__
         elif isinstance(o, IK8sClient):
@@ -454,7 +463,7 @@ class CompanionGraph:
         return graph
 
     async def astream(
-        self, conversation_id: str, message: Message, k8s_client: IK8sClient
+        self, conversation_id: str, message: Message, k8s_client: IK8sClient, k8s_mcp_client: MultiServerMCPClient
     ) -> AsyncIterator[str]:
         """Stream the output to the caller asynchronously."""
         user_input = UserInput(**message.__dict__)
@@ -474,6 +483,7 @@ class CompanionGraph:
             messages=messages,
             input=user_input,
             k8s_client=k8s_client,
+            k8s_mcp_client=k8s_mcp_client,
             subtasks=[],
             error=None,
         )
@@ -487,10 +497,6 @@ class CompanionGraph:
                 UsageTrackerCallback(cluster_id, cast(IUsageMemory, self.memory)),
             ],
             tags=[cluster_id],
-            metadata=get_langfuse_metadata(
-                message.user_identifier or "unknown",
-                cluster_id,
-            ),
         )
 
         async for chunk in self.graph.astream(input=graph_input, config=run_config):

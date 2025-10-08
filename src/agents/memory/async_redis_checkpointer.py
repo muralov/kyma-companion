@@ -305,28 +305,45 @@ class AsyncRedisSaver(BaseCheckpointSaver):
         parent_checkpoint_id = config["configurable"].get("checkpoint_id")
         key = _make_redis_checkpoint_key(thread_id, checkpoint_ns, checkpoint_id)
 
-        type_, serialized_checkpoint = self.serde.dumps_typed(checkpoint)
-        serialized_metadata = self.serde.dumps(metadata)
-        data = {
-            "checkpoint": serialized_checkpoint,
-            "type": type_,
-            "checkpoint_id": checkpoint_id,
-            "metadata": serialized_metadata,
-            "parent_checkpoint_id": (
-                parent_checkpoint_id if parent_checkpoint_id else ""
-            ),
-        }
-
-        await self._redis_call(self.conn.hset(key, mapping=data))
-        # Set TTL for each checkpoint
-        await self._redis_call(self.conn.expire(key, redis_ttl))
-        return {
-            "configurable": {
-                "thread_id": thread_id,
-                "checkpoint_ns": checkpoint_ns,
+        try:
+            type_, serialized_checkpoint = self.serde.dumps_typed(checkpoint)
+            serialized_metadata = self.serde.dumps(metadata)
+            data = {
+                "checkpoint": serialized_checkpoint,
+                "type": type_,
                 "checkpoint_id": checkpoint_id,
+                "metadata": serialized_metadata,
+                "parent_checkpoint_id": (
+                    parent_checkpoint_id if parent_checkpoint_id else ""
+                ),
             }
-        }
+
+            await self._redis_call(self.conn.hset(key, mapping=data))
+            # Set TTL for each checkpoint
+            await self._redis_call(self.conn.expire(key, redis_ttl))
+            return {
+                "configurable": {
+                    "thread_id": thread_id,
+                    "checkpoint_ns": checkpoint_ns,
+                    "checkpoint_id": checkpoint_id,
+                }
+            }
+        except TypeError as e:
+            logger.warning(
+                "Skipping non-serializable value for channel. Skipping."
+            )
+        except Exception as e:
+            logger.exception(
+                "Unexpected serialization error for channel. Skipping.",
+            )
+
+        return {
+                "configurable": {
+                    "thread_id": thread_id,
+                    "checkpoint_ns": checkpoint_ns,
+                    "checkpoint_id": checkpoint_id,
+                }
+            }
 
     async def aput_writes(
         self,
@@ -358,7 +375,23 @@ class AsyncRedisSaver(BaseCheckpointSaver):
                 task_id,
                 WRITES_IDX_MAP.get(channel, idx),
             )
-            type_, serialized_value = self.serde.dumps_typed(value)
+            try:
+                type_, serialized_value = self.serde.dumps_typed(value)
+            except TypeError as e:
+                logger.warning(
+                    "Skipping non-serializable value for channel '%s': %s (%s)",
+                    channel,
+                    type(value).__name__,
+                    e,
+                )
+                continue
+            except Exception as e:
+                logger.exception(
+                    "Unexpected serialization error for channel '%s' (type %s). Skipping.",
+                    channel,
+                    type(value).__name__,
+                )
+                continue
             data = {"channel": channel, "type": type_, "value": serialized_value}
             if all(w[0] in WRITES_IDX_MAP for w in writes):
                 # Use HSET which will overwrite existing values

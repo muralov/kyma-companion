@@ -5,6 +5,9 @@ from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path
 from fastapi.encoders import jsonable_encoder
+from langchain_core.tools import BaseTool
+from langchain_mcp_adapters.client import MultiServerMCPClient
+from langgraph.prebuilt import InjectedState
 from starlette.responses import JSONResponse, StreamingResponse
 
 from agents.common.constants import CLUSTER, ERROR_RATE_LIMIT_CODE, UNKNOWN
@@ -288,17 +291,37 @@ async def messages(
         # mark the message as a cluster overview query
         message.resource_scope = CLUSTER
 
+    k8s_mcp_client: MultiServerMCPClient = create_mcp_client(x_cluster_url, x_k8s_authorization, x_cluster_certificate_authority_data)  # type: ignore[call-arg]
+
     return StreamingResponse(
         (
             chunk_response + b"\n"
             async for chunk in conversation_service.handle_request(
-                str(conversation_id), message, k8s_client
+                str(conversation_id), message, k8s_client, k8s_mcp_client
             )
             for chunk_response in (prepare_chunk_response(chunk),)
             if chunk_response is not None
         ),
         media_type="text/event-stream",
     )
+
+def create_mcp_client(x_cluster_url, x_k8s_authorization, x_cluster_ca: str) -> MultiServerMCPClient:
+    """Create a MultiServerMCPClient instance for Kubernetes API communication."""
+    # Create MCP client for Kubernetes API communication.
+    k8s_client = MultiServerMCPClient(
+        {
+            "kubernetes": {
+                "url": "http://localhost:8000/mcp",
+                "headers": {
+                    "x_cluster_url": x_cluster_url,
+                    "x_k8s_authorization": x_k8s_authorization,
+                    "x_cluster_certificate_authority_data": x_cluster_ca,
+                },
+                "transport": "streamable_http",
+            }
+        }
+    )
+    return k8s_client
 
 
 async def check_token_usage(x_cluster_url: str, conversation_service: IService) -> None:
